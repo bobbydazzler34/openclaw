@@ -1,0 +1,16 @@
+enabled: true
+api_base_url: https://api.sharesight.com/api/v2
+token_url: https://api.sharesight.com/oauth2/token
+portfolio_name: DC Pavula
+excel_path_env_var: OPENCLAW_SHARESIGHT_SYNC_EXCEL_PATH
+excel_path: ~/OneDrive/Documents/Finance/Personal CashFlow.xlsx
+#excel_path: /Users/chriscropley/Public/Personal CashFlow.xlsx
+worksheet_name: DC Pavula FY2526
+client_id_env: SHARESIGHT_CLIENT_ID
+client_secret_env: SHARESIGHT_CLIENT_SECRET
+dry_run: false
+tax_field_name: non_resident_withholding_tax
+confirmed_state: confirmed
+unconfirmed_state: unconfirmed
+# payouts_start_date: 2025-04-01
+# payouts_end_date: 2026-03-31

@@ -1,0 +1,8 @@
+enabled: true
+account_id: your_account_id_here
+poll_interval_seconds: 300
+excel_path_env_var: OPENCLAW_MSTY_TRACKER_EXCEL_PATH
+# Safe default: only fill ROC% on DC rows that already link to Distributions.
+# Row insert via openpyxl often damages tables/array formulas — opt in if needed.
+update_dc_pavula: true
+dc_pavula_insert_missing_rows: false

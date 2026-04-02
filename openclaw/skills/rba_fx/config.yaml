@@ -1,0 +1,8 @@
+enabled: true
+csv_url: https://www.rba.gov.au/statistics/tables/csv/f11.1-data.csv
+excel_path_env_var: OPENCLAW_RBA_FX_EXCEL_PATH
+excel_path: ~/OneDrive/Documents/Finance/Personal CashFlow.xlsx
+worksheet_name: FXRates
+date_column_name: Date
+audusd_column_name: AUDUSD
+usdaud_column_name: USDAUD

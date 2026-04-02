@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+**/.venv/
+**/venv/
+
+# Test/runtime caches/coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Local env vars (keep example)
+.env
+.env.*
+!**/.env.example
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+
+# Local databases / logs
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Potentially sensitive exports
+*.xlsx
+*.xls
+*.xlsm
+
+# Secret material (extra safety)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
