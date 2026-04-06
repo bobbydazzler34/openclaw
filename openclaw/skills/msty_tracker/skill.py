@@ -25,7 +25,7 @@ MSTY_URL = "https://yieldmaxetfs.com/our-etfs/msty/"
 EXCEL_PATH = "~/OneDrive/Documents/Finance/Personal CashFlow.xlsx"
 EXCEL_PATH_ENV_VAR = "OPENCLAW_MSTY_TRACKER_EXCEL_PATH"
 WORKSHEET_NAME = "Distributions"
-DC_PAVULA_WORKSHEET_NAME = "DC Pavula FY2526"
+DC_PAVULA_WORKSHEET_NAME = "CS FY2526"
 # openpyxl insert_rows + row copy breaks many real workbooks (tables, array formulas, merges).
 # Safe default: only fill ROC% on rows that already reference Distributions.
 DEFAULT_UPDATE_DC_PAVULA = True
