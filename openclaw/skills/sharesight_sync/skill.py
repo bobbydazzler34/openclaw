@@ -29,6 +29,7 @@ DEFAULT_CLIENT_SECRET_ENV = "SHARESIGHT_CLIENT_SECRET"
 DEFAULT_TAX_FIELD_NAME = "resident_withholding_tax"
 DEFAULT_CONFIRMED_STATE = "confirmed"
 DEFAULT_UNCONFIRMED_STATE = "unconfirmed"
+DEFAULT_UPDATE_EXISTING_PAYOUTS_BY_ID = False
 DATE_OUTPUT_FORMAT = "%d/%m/%Y"
 HEADER_START_COLUMN = 8
 REQUIRED_HEADERS = {
@@ -84,19 +85,19 @@ class PayoutUpdate:
     comments: str
     state: str
 
-    def to_api_payload(self) -> dict[str, Any]:
+    def to_api_payload(self, *, include_amount: bool = True) -> dict[str, Any]:
         """Return the wrapped Sharesight PUT payload."""
-        return {
-            "payout": {
-                "paid_on": self.paid_on.isoformat(),
-                "goes_ex_on": self.goes_ex_on.isoformat(),
-                "amount": float(self.amount),
-                self.tax_field_name: float(self.tax_amount),
-                "exchange_rate": float(self.exchange_rate),
-                "comments": self.comments,
-                "state": self.state,
-            },
+        payout_payload = {
+            "paid_on": self.paid_on.isoformat(),
+            "goes_ex_on": self.goes_ex_on.isoformat(),
+            self.tax_field_name: float(self.tax_amount),
+            "exchange_rate": float(self.exchange_rate),
+            "comments": self.comments,
+            "state": self.state,
         }
+        if include_amount:
+            payout_payload["amount"] = float(self.amount)
+        return {"payout": payout_payload}
 
 
 @dataclass(slots=True)
@@ -171,6 +172,7 @@ class RunResult:
     skipped_worksheet_rows: list[dict[str, str]]
     skipped_api_rows: list[dict[str, Any]]
     dry_run_payloads: list[dict[str, Any]]
+    differing_income_tax_ids: list[int]
 
 
 class SharesightSyncSkill(SkillBase):
@@ -194,6 +196,7 @@ class SharesightSyncSkill(SkillBase):
         tax_field_name: str | None = None,
         confirmed_state: str | None = None,
         unconfirmed_state: str | None = None,
+        update_existing_payouts_by_id: bool | None = None,
         payouts_start_date: str | date | None = None,
         payouts_end_date: str | date | None = None,
         workbook_loader: Callable[..., Any] | None = None,
@@ -231,6 +234,15 @@ class SharesightSyncSkill(SkillBase):
         )
         self.unconfirmed_state = str(
             self.config.get("unconfirmed_state", unconfirmed_state or DEFAULT_UNCONFIRMED_STATE),
+        )
+        configured_update_existing = self.config.get(
+            "update_existing_payouts_by_id",
+            update_existing_payouts_by_id,
+        )
+        self.update_existing_payouts_by_id = (
+            DEFAULT_UPDATE_EXISTING_PAYOUTS_BY_ID
+            if configured_update_existing is None
+            else bool(configured_update_existing)
         )
         self.payouts_start_date = self._coerce_optional_date(
             self.config.get("payouts_start_date", payouts_start_date),
@@ -278,6 +290,7 @@ class SharesightSyncSkill(SkillBase):
         unmatched_pay_dates: list[str] = []
         skipped_api_rows: list[dict[str, Any]] = []
         dry_run_payloads: list[dict[str, Any]] = []
+        differing_income_tax_ids: list[int] = []
         found_count = 0
         matched_count = 0
 
@@ -290,65 +303,27 @@ class SharesightSyncSkill(SkillBase):
                 end_date=end_date,
             )
 
-            for payout in payouts:
-                if payout.state != self.unconfirmed_state:
-                    continue
-
-                resolved_payout = payout
-                if payout.id is not None and payout.paid_on is None:
-                    resolved_payout = api.get_payout(payout.id)
-                if resolved_payout.paid_on is None:
-                    skipped_api_rows.append(
-                        {
-                            "reason": "Unconfirmed payout is missing paid_on.",
-                            "payout": resolved_payout.raw,
-                        },
-                    )
-                    continue
-
-                found_count += 1
-                entry = worksheet_entries.get(resolved_payout.paid_on)
-                if entry is None:
-                    unmatched_pay_dates.append(self._format_date(resolved_payout.paid_on))
-                    continue
-
-                matched_pay_dates.append(self._format_date(resolved_payout.paid_on))
-                confirm_payload = None if resolved_payout.id is not None else self._build_confirm_payload(resolved_payout)
-                if resolved_payout.id is None and confirm_payload is None:
-                    skipped_api_rows.append(
-                        {
-                            "reason": "Unconfirmed payout cannot be confirmed because holding_id or company_event_id is missing.",
-                            "payout": resolved_payout.raw,
-                        },
-                    )
-                    continue
-                update = entry.to_payout_update(
-                    tax_field_name=self.tax_field_name,
-                    confirmed_state=self.confirmed_state,
+            if self.update_existing_payouts_by_id:
+                found_count, matched_count = self._run_update_existing_payouts_by_id(
+                    payouts=payouts,
+                    worksheet_entries=worksheet_entries,
+                    api=api,
+                    matched_pay_dates=matched_pay_dates,
+                    unmatched_pay_dates=unmatched_pay_dates,
+                    skipped_api_rows=skipped_api_rows,
+                    dry_run_payloads=dry_run_payloads,
+                    differing_income_tax_ids=differing_income_tax_ids,
                 )
-                update_payload = update.to_api_payload()
-                self._log_payout_update(
-                    resolved_payout.id,
-                    resolved_payout.paid_on,
-                    confirm_payload,
-                    update_payload,
+            else:
+                found_count, matched_count = self._run_confirm_unconfirmed_flow(
+                    payouts=payouts,
+                    worksheet_entries=worksheet_entries,
+                    api=api,
+                    matched_pay_dates=matched_pay_dates,
+                    unmatched_pay_dates=unmatched_pay_dates,
+                    skipped_api_rows=skipped_api_rows,
+                    dry_run_payloads=dry_run_payloads,
                 )
-                if self.dry_run:
-                    dry_run_payloads.append(
-                        {
-                            "payout_id": resolved_payout.id,
-                            "paid_on": resolved_payout.paid_on.isoformat(),
-                            "confirm_payload": confirm_payload,
-                            "update_payload": update_payload,
-                        },
-                    )
-                    continue
-
-                target_payout = resolved_payout
-                if target_payout.id is None:
-                    target_payout = api.confirm_payout(confirm_payload)
-                api.update_payout(target_payout.id, update_payload)
-                matched_count += 1
         finally:
             api.close()
 
@@ -363,6 +338,7 @@ class SharesightSyncSkill(SkillBase):
             skipped_worksheet_rows=skipped_worksheet_rows,
             skipped_api_rows=skipped_api_rows,
             dry_run_payloads=dry_run_payloads,
+            differing_income_tax_ids=differing_income_tax_ids,
         )
         self.logger.info(
             "Sharesight API sync complete with %s unconfirmed payouts and %s matches%s.",
@@ -379,6 +355,7 @@ class SharesightSyncSkill(SkillBase):
             "workbook_path": str(self.excel_path),
             "worksheet_name": self.worksheet_name,
             "tax_field_name": self.tax_field_name,
+            "update_existing_payouts_by_id": self.update_existing_payouts_by_id,
             "confirmed_state": self.confirmed_state,
             "unconfirmed_state": self.unconfirmed_state,
             "payouts_start_date": None if start_date is None else start_date.isoformat(),
@@ -390,8 +367,143 @@ class SharesightSyncSkill(SkillBase):
             "skipped_worksheet_rows": result.skipped_worksheet_rows,
             "skipped_api_rows": result.skipped_api_rows,
             "dry_run_payloads": result.dry_run_payloads,
+            "differing_income_tax_ids": result.differing_income_tax_ids,
             "unconfirmed_transactions_found": result.unconfirmed_payouts_found,
         }
+
+    def _run_confirm_unconfirmed_flow(
+        self,
+        *,
+        payouts: list[PayoutRecord],
+        worksheet_entries: dict[date, WorksheetEntry],
+        api: SharesightApi,
+        matched_pay_dates: list[str],
+        unmatched_pay_dates: list[str],
+        skipped_api_rows: list[dict[str, Any]],
+        dry_run_payloads: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        """Current flow: confirm unconfirmed payouts, then update them."""
+        found_count = 0
+        matched_count = 0
+        for payout in payouts:
+            if payout.state != self.unconfirmed_state:
+                continue
+            resolved_payout = payout
+            if payout.id is not None and payout.paid_on is None:
+                resolved_payout = api.get_payout(payout.id)
+            if resolved_payout.paid_on is None:
+                skipped_api_rows.append(
+                    {
+                        "reason": "Unconfirmed payout is missing paid_on.",
+                        "payout": resolved_payout.raw,
+                    },
+                )
+                continue
+            found_count += 1
+            entry = worksheet_entries.get(resolved_payout.paid_on)
+            if entry is None:
+                unmatched_pay_dates.append(self._format_date(resolved_payout.paid_on))
+                continue
+            matched_pay_dates.append(self._format_date(resolved_payout.paid_on))
+            confirm_payload = None if resolved_payout.id is not None else self._build_confirm_payload(resolved_payout)
+            if resolved_payout.id is None and confirm_payload is None:
+                skipped_api_rows.append(
+                    {
+                        "reason": "Unconfirmed payout cannot be confirmed because holding_id or company_event_id is missing.",
+                        "payout": resolved_payout.raw,
+                    },
+                )
+                continue
+            update = entry.to_payout_update(
+                tax_field_name=self.tax_field_name,
+                confirmed_state=self.confirmed_state,
+            )
+            include_amount = self._amount_should_be_included(update.amount)
+            if not include_amount:
+                self._log_omitted_amount(resolved_payout.id, resolved_payout.paid_on, update.amount)
+            update_payload = update.to_api_payload(include_amount=include_amount)
+            self._log_payout_update(
+                resolved_payout.id,
+                resolved_payout.paid_on,
+                confirm_payload,
+                update_payload,
+            )
+            if self.dry_run:
+                dry_run_payloads.append(
+                    {
+                        "payout_id": resolved_payout.id,
+                        "paid_on": resolved_payout.paid_on.isoformat(),
+                        "confirm_payload": confirm_payload,
+                        "update_payload": update_payload,
+                    },
+                )
+                continue
+            target_payout = resolved_payout
+            if target_payout.id is None:
+                target_payout = api.confirm_payout(confirm_payload)
+            api.update_payout(target_payout.id, update_payload)
+            matched_count += 1
+        return found_count, matched_count
+
+    def _run_update_existing_payouts_by_id(
+        self,
+        *,
+        payouts: list[PayoutRecord],
+        worksheet_entries: dict[date, WorksheetEntry],
+        api: SharesightApi,
+        matched_pay_dates: list[str],
+        unmatched_pay_dates: list[str],
+        skipped_api_rows: list[dict[str, Any]],
+        dry_run_payloads: list[dict[str, Any]],
+        differing_income_tax_ids: list[int],
+    ) -> tuple[int, int]:
+        """New flow: update existing payout IDs by paid_on match only."""
+        found_count = 0
+        matched_count = 0
+        for payout in payouts:
+            if payout.id is None:
+                continue
+            resolved_payout = payout if payout.paid_on is not None else api.get_payout(payout.id)
+            if resolved_payout.paid_on is None:
+                skipped_api_rows.append({"reason": "Payout is missing paid_on.", "payout": resolved_payout.raw})
+                continue
+            found_count += 1
+            entry = worksheet_entries.get(resolved_payout.paid_on)
+            if entry is None:
+                unmatched_pay_dates.append(self._format_date(resolved_payout.paid_on))
+                continue
+            matched_pay_dates.append(self._format_date(resolved_payout.paid_on))
+            update = entry.to_payout_update(
+                tax_field_name=self.tax_field_name,
+                confirmed_state=self.confirmed_state,
+            )
+            include_amount = self._amount_should_be_included(update.amount)
+            if not include_amount:
+                self._log_omitted_amount(resolved_payout.id, resolved_payout.paid_on, update.amount)
+            update_payload = update.to_api_payload(include_amount=include_amount)
+            current_amount = self._to_float_or_none(resolved_payout.raw.get("amount"))
+            current_tax = self._to_float_or_none(resolved_payout.raw.get(self.tax_field_name))
+            desired_amount = self._to_float_or_none(update_payload["payout"].get("amount"))
+            desired_tax = update_payload["payout"][self.tax_field_name]
+            if not self._floats_differ(current_amount, desired_amount) and not self._floats_differ(current_tax, desired_tax):
+                continue
+            differing_income_tax_ids.append(resolved_payout.id)
+            if self.dry_run:
+                dry_run_payloads.append(
+                    {
+                        "payout_id": resolved_payout.id,
+                        "paid_on": resolved_payout.paid_on.isoformat(),
+                        "current_amount": current_amount,
+                        "desired_amount": desired_amount,
+                        "current_tax": current_tax,
+                        "desired_tax": desired_tax,
+                        "update_payload": update_payload,
+                    },
+                )
+                continue
+            api.update_payout(resolved_payout.id, update_payload)
+            matched_count += 1
+        return found_count, matched_count
 
     def _read_secret(self, *, env_name: str, label: str) -> str:
         """Read a required secret from the environment."""
@@ -427,6 +539,13 @@ class SharesightSyncSkill(SkillBase):
                 "state": self.confirmed_state,
             },
         }
+
+    def _log_omitted_amount(self, payout_id: int | None, pay_date: date, amount: str) -> None:
+        """Log when amount is omitted because the worksheet value is non-positive."""
+        print(
+            f"Omitting non-positive amount for payout {payout_id or 'unconfirmed'} "
+            f"on {self._format_date(pay_date)}: amount={amount}",
+        )
 
     def _read_worksheet_entries(self) -> tuple[dict[date, WorksheetEntry], list[dict[str, str]]]:
         """Load exact pay-date matches from the configured worksheet."""
@@ -590,6 +709,28 @@ class SharesightSyncSkill(SkillBase):
     def _is_excel_error_value(self, value: str) -> bool:
         """Return whether the supplied text looks like an Excel error literal."""
         return value in {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NUM!", "#NAME?", "#NULL!"}
+
+    def _to_float_or_none(self, value: Any) -> float | None:
+        """Convert API numeric values to float for comparison."""
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _floats_differ(self, left: float | None, right: float | None, *, epsilon: float = 1e-9) -> bool:
+        """Return whether two numeric values differ."""
+        if left is None or right is None:
+            return left != right
+        return abs(left - right) > epsilon
+
+    def _amount_should_be_included(self, amount: str) -> bool:
+        """Return whether payout amount should be included in update payload."""
+        try:
+            return Decimal(str(amount).strip()) > 0
+        except (InvalidOperation, ValueError):
+            return False
 
 class SharesightApiClient:
     """urllib-backed Sharesight API adapter."""

@@ -352,6 +352,86 @@ class TestSharesightSyncSkill(unittest.TestCase):
         self.assertEqual(api.updated_payloads[1][0], 12)
         self.assertEqual(api.updated_payloads[1][1]["payout"]["amount"], 56.78)
 
+    def test_run_update_existing_mode_dry_run_reports_only_income_tax_differences(self) -> None:
+        """Update-by-id dry run only reports payout IDs with amount/tax differences."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            create_workbook_fixture(workbook_path)
+            api = FakeApiClient(
+                [
+                    PayoutRecord(
+                        id=10,
+                        paid_on=date(2026, 1, 5),
+                        state="confirmed",
+                        raw={
+                            "id": 10,
+                            "paid_on": "2026-01-05",
+                            "amount": 123.45,
+                            "resident_withholding_tax": 6.78,
+                        },
+                    ),
+                    PayoutRecord(
+                        id=11,
+                        paid_on=date(2026, 1, 12),
+                        state="confirmed",
+                        raw={
+                            "id": 11,
+                            "paid_on": "2026-01-12",
+                            "amount": 40.0,
+                            "resident_withholding_tax": 9.99,
+                        },
+                    ),
+                ],
+            )
+            skill = SharesightSyncSkill(
+                excel_path=workbook_path,
+                client_id="client-id",
+                client_secret="client-secret",
+                update_existing_payouts_by_id=True,
+                dry_run=True,
+                api_factory=lambda: api,
+            )
+
+            result = skill.run()
+
+        self.assertTrue(result["dry_run"])
+        self.assertTrue(result["update_existing_payouts_by_id"])
+        self.assertEqual(result["unconfirmed_payouts_found"], 2)
+        self.assertEqual(result["matched_and_updated"], 0)
+        self.assertEqual(result["differing_income_tax_ids"], [11])
+        self.assertEqual(len(result["dry_run_payloads"]), 1)
+        self.assertEqual(result["dry_run_payloads"][0]["payout_id"], 11)
+        self.assertEqual(result["dry_run_payloads"][0]["desired_amount"], 56.78)
+        self.assertEqual(result["dry_run_payloads"][0]["desired_tax"], 1.11)
+        self.assertEqual(api.updated_payloads, [])
+
+    def test_non_positive_income_omits_amount_from_update_payload(self) -> None:
+        """Zero-income rows omit amount to avoid Sharesight 422 errors."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            create_workbook_fixture(workbook_path)
+            workbook = load_workbook(workbook_path)
+            worksheet = workbook["DC Pavula FY2526"]
+            worksheet.cell(row=8, column=13).value = 0  # Inc $
+            workbook.save(workbook_path)
+            workbook.close()
+
+            api = FakeApiClient(
+                [PayoutRecord(id=10, paid_on=date(2026, 1, 5), state="unconfirmed", raw={})],
+            )
+            skill = SharesightSyncSkill(
+                excel_path=workbook_path,
+                client_id="client-id",
+                client_secret="client-secret",
+                dry_run=True,
+                api_factory=lambda: api,
+            )
+
+            result = skill.run()
+
+        payload = result["dry_run_payloads"][0]["update_payload"]["payout"]
+        self.assertNotIn("amount", payload)
+
     def test_run_confirms_unconfirmed_payout_before_updating_when_id_missing(self) -> None:
         """Unconfirmed payouts without IDs are POSTed before the final PUT."""
         with tempfile.TemporaryDirectory() as temp_dir:

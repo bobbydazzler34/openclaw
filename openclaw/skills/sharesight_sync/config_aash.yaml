@@ -5,11 +5,12 @@ api_base_url: https://api.sharesight.com/api/v2
 token_url: https://api.sharesight.com/oauth2/token
 portfolio_name: Aash Charles Schwab
 excel_path_env_var: OPENCLAW_SHARESIGHT_SYNC_EXCEL_PATH
-excel_path: ~/OneDrive/Documents/AashFinance/AashCharlesSchwab_BK.xlsx
+excel_path: ~/OneDrive/Documents/AashFinance/AashCharlesSchwab.xlsx
 worksheet_name: CS FY2526
 client_id_env: SHARESIGHT_CLIENT_ID
 client_secret_env: SHARESIGHT_CLIENT_SECRET
 dry_run: false
+update_existing_payouts_by_id: false # Set to true when you want to update existing payouts by ID.  False to create new payouts.
 tax_field_name: non_resident_withholding_tax
 confirmed_state: confirmed
 unconfirmed_state: unconfirmed

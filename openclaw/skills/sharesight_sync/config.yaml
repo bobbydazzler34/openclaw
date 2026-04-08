@@ -9,6 +9,7 @@ worksheet_name: DC Pavula FY2526
 client_id_env: SHARESIGHT_CLIENT_ID
 client_secret_env: SHARESIGHT_CLIENT_SECRET
 dry_run: false
+update_existing_payouts_by_id: false
 tax_field_name: non_resident_withholding_tax
 confirmed_state: confirmed
 unconfirmed_state: unconfirmed
