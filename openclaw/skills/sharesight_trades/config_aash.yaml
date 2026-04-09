@@ -1,0 +1,16 @@
+# Sharesight trades — Aash / Charles Schwab workbook + second portfolio.
+enabled: true
+api_base_url: https://api.sharesight.com/api/v2
+token_url: https://api.sharesight.com/oauth2/token
+portfolio_name: Aash Charles Schwab
+excel_path_env_var: OPENCLAW_SHARESIGHT_SYNC_EXCEL_PATH
+excel_path: ~/OneDrive/Documents/AashFinance/AashCharlesSchwab.xlsx
+worksheet_name: CS FY2526
+holding_id: 26362284 # Replace with your Sharesight holding id for this portfolio
+client_id_env: SHARESIGHT_CLIENT_ID
+client_secret_env: SHARESIGHT_CLIENT_SECRET
+dry_run: true
+transaction_type: CAPITAL_RETURN
+created_state: confirmed
+confirmed_state: confirmed
+unique_identifier_prefix: OPENCLAW-CS-ROC-AASH
