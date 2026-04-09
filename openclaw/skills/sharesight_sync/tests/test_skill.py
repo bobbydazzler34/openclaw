@@ -177,6 +177,35 @@ class TestSharesightSyncSkill(unittest.TestCase):
 
         self.assertEqual(skill.excel_path, Path("/tmp/live-cashflow.xlsx"))
 
+    def test_constructor_arguments_override_yaml_for_boolean_flags(self) -> None:
+        """Explicit constructor booleans take precedence over YAML values."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            config_path = Path(temp_dir) / "sharesight_sync.yaml"
+            create_workbook_fixture(workbook_path)
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "dry_run: true",
+                        "update_existing_payouts_by_id: true",
+                    ],
+                ),
+                encoding="utf-8",
+            )
+
+            skill = SharesightSyncSkill(
+                config_path=config_path,
+                excel_path=workbook_path,
+                client_id="client-id",
+                client_secret="client-secret",
+                dry_run=False,
+                update_existing_payouts_by_id=False,
+                api_factory=lambda: FakeApiClient([]),
+            )
+
+        self.assertFalse(skill.dry_run)
+        self.assertFalse(skill.update_existing_payouts_by_id)
+
     def test_run_skips_worksheet_rows_with_excel_error_values(self) -> None:
         """Rows containing Excel error values are reported and ignored."""
         with tempfile.TemporaryDirectory() as temp_dir:

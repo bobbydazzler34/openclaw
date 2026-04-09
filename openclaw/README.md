@@ -8,7 +8,10 @@ Skills are self-contained modules under `openclaw/skills/`. Each skill directory
 
 - `skill.py` for the skill implementation
 - `config.yaml` for skill-specific configuration
+- `README.md` for how to run and configure the skill
 - `tests/` for unit-level test coverage
+
+Per-skill guides: [rba_fx](skills/rba_fx/README.md), [msty_tracker](skills/msty_tracker/README.md), [sharesight_sync](skills/sharesight_sync/README.md).
 
 Shared behavior lives in `openclaw/skills/_base/skill_base.py`, which provides common logging and config-loading utilities.
 

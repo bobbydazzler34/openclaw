@@ -224,8 +224,10 @@ class SharesightSyncSkill(SkillBase):
             env_name=str(self.config.get("client_secret_env", client_secret_env or DEFAULT_CLIENT_SECRET_ENV)),
             label="Sharesight client secret",
         )
-        configured_dry_run = self.config.get("dry_run", dry_run)
-        self.dry_run = False if configured_dry_run is None else bool(configured_dry_run)
+        configured_dry_run = self._coerce_optional_bool(
+            dry_run if dry_run is not None else self.config.get("dry_run"),
+        )
+        self.dry_run = False if configured_dry_run is None else configured_dry_run
         self.tax_field_name = str(
             self.config.get("tax_field_name", tax_field_name or DEFAULT_TAX_FIELD_NAME),
         )
@@ -235,14 +237,15 @@ class SharesightSyncSkill(SkillBase):
         self.unconfirmed_state = str(
             self.config.get("unconfirmed_state", unconfirmed_state or DEFAULT_UNCONFIRMED_STATE),
         )
-        configured_update_existing = self.config.get(
-            "update_existing_payouts_by_id",
-            update_existing_payouts_by_id,
+        configured_update_existing = self._coerce_optional_bool(
+            update_existing_payouts_by_id
+            if update_existing_payouts_by_id is not None
+            else self.config.get("update_existing_payouts_by_id"),
         )
         self.update_existing_payouts_by_id = (
             DEFAULT_UPDATE_EXISTING_PAYOUTS_BY_ID
             if configured_update_existing is None
-            else bool(configured_update_existing)
+            else configured_update_existing
         )
         self.payouts_start_date = self._coerce_optional_date(
             self.config.get("payouts_start_date", payouts_start_date),
@@ -674,6 +677,21 @@ class SharesightSyncSkill(SkillBase):
             except ValueError:
                 continue
         raise ValueError(f"Unable to parse configured date value: {value!r}")
+
+    def _coerce_optional_bool(self, value: Any) -> bool | None:
+        """Coerce an optional configured boolean value."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().casefold()
+        if text in {"true", "1", "yes", "y", "on"}:
+            return True
+        if text in {"false", "0", "no", "n", "off"}:
+            return False
+        raise ValueError(f"Unable to parse configured boolean value: {value!r}")
 
     def _normalize_decimal_string(self, value: Any) -> str:
         """Normalize a numeric cell value into a Sharesight-friendly string."""
