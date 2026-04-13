@@ -37,7 +37,8 @@ REQUIRED_HEADERS = {
     "ROC $": 12,
     "Gross Amt": 14,
 }
-EXCHANGE_RATE_COLUMN = 19
+EXCHANGE_RATE_COLUMN = 20  # column T
+FLOAT_COMPARE_EPSILON = 1e-6
 
 
 @dataclass(slots=True)
@@ -68,17 +69,25 @@ class TradeRecord:
     transaction_type: str
     holding_id: int | None
     unique_identifier: str | None
+    roc_value: float | None
+    exchange_rate_value: float | None
     raw: dict[str, Any]
 
 
 class SharesightTradeApi(Protocol):
-    """API-facing contract for trade create operations."""
+    """API-facing contract for trade reconcile operations."""
 
     def resolve_portfolio_id(self, portfolio_name: str) -> int:
         """Resolve a portfolio ID from its visible name."""
 
     def create_trade(self, payload: dict[str, Any]) -> TradeRecord:
         """Create one trade."""
+
+    def update_trade(self, trade_id: int, payload: dict[str, Any]) -> TradeRecord:
+        """Update one trade (PUT)."""
+
+    def delete_trade(self, trade_id: int) -> None:
+        """Delete one trade (DELETE)."""
 
     def list_trades(
         self,
@@ -94,7 +103,7 @@ class SharesightTradeApi(Protocol):
 
 
 class SharesightTradesSkill(SkillBase):
-    """Create Sharesight CAPITAL_RETURN trades from Excel rows."""
+    """Reconcile Sharesight CAPITAL_RETURN trades with Excel (source of truth)."""
 
     def __init__(
         self,
@@ -166,101 +175,242 @@ class SharesightTradesSkill(SkillBase):
             raise ValueError("sharesight_trades only supports transaction_type CAPITAL_RETURN.")
 
     def run(self, dry_run: bool | str | int | None = None) -> dict[str, Any]:
-        """Create confirmed trades for each valid worksheet row."""
+        """Reconcile trades: add missing, update mismatched ROC/FX, delete orphans."""
         resolved_dry_run = self._resolve_runtime_dry_run(dry_run)
         self.logger.info(
-            "Starting Sharesight trade sync for portfolio %s using %s [%s].",
+            "Starting Sharesight trade reconcile for portfolio %s using %s [%s].",
             self.portfolio_name,
             self.excel_path,
             self.worksheet_name,
         )
         entries, skipped_rows = self._read_worksheet_entries()
         api = self._api_factory()
-        created_count = 0
-        confirmed_count = 0
-        dry_run_payloads: list[dict[str, Any]] = []
-        dry_run_matches: list[dict[str, Any]] = []
-        dry_run_new_trades: list[dict[str, Any]] = []
-        created_trade_ids: list[int] = []
-        confirmed_trade_ids: list[int] = []
-        matched_and_skipped_count = 0
-        existing_trades_count = 0
+
         invalid_rows: list[dict[str, Any]] = []
+        all_sheet_dates: set[date] = {e.pay_date for e in entries}
+        desired_by_date: dict[date, WorksheetEntry] = {}
+
+        for entry in entries:
+            invalid_reason = self._validate_entry(entry)
+            if invalid_reason is not None:
+                invalid_rows.append(
+                    {
+                        "row": entry.row_index,
+                        "pay_date": entry.pay_date.isoformat(),
+                        "reason": invalid_reason,
+                    },
+                )
+                print(
+                    "SKIP INVALID "
+                    f"row={entry.row_index} date={entry.pay_date.isoformat()} reason={invalid_reason}",
+                )
+                continue
+            desired_by_date[entry.pay_date] = entry
+
+        reconcile_add: list[dict[str, Any]] = []
+        reconcile_update: list[dict[str, Any]] = []
+        reconcile_delete: list[dict[str, Any]] = []
+        reconcile_noop: list[dict[str, Any]] = []
+
+        created_count = 0
+        updated_count = 0
+        deleted_count = 0
+        noop_count = 0
+        created_trade_ids: list[int] = []
+        updated_trade_ids: list[int] = []
+        deleted_trade_ids: list[int] = []
+        existing_trades_count = 0
 
         try:
+            if not all_sheet_dates:
+                noop_count = 0
+                return self._build_result(
+                    resolved_dry_run=resolved_dry_run,
+                    entries=entries,
+                    skipped_rows=skipped_rows,
+                    invalid_rows=invalid_rows,
+                    existing_trades_count=0,
+                    reconcile_add=reconcile_add,
+                    reconcile_update=reconcile_update,
+                    reconcile_delete=reconcile_delete,
+                    reconcile_noop=reconcile_noop,
+                    created_count=0,
+                    updated_count=0,
+                    deleted_count=0,
+                    noop_count=noop_count,
+                    created_trade_ids=[],
+                    updated_trade_ids=[],
+                    deleted_trade_ids=[],
+                )
+
             portfolio_id = api.resolve_portfolio_id(self.portfolio_name)
-            start_date, end_date = self._determine_date_window(entries)
+            start_date = min(all_sheet_dates)
+            end_date = max(all_sheet_dates)
             existing_trades = api.list_trades(
                 portfolio_id,
                 start_date=start_date,
                 end_date=end_date,
             )
             existing_trades_count = len(existing_trades)
-            existing_trade_lookup = self._build_existing_trade_lookup(existing_trades)
-            for entry in entries:
-                invalid_reason = self._validate_entry(entry)
-                if invalid_reason is not None:
-                    invalid_payload = {
-                        "row": entry.row_index,
-                        "pay_date": entry.pay_date.isoformat(),
-                        "reason": invalid_reason,
-                    }
-                    invalid_rows.append(invalid_payload)
-                    print(
-                        "SKIP INVALID "
-                        f"row={entry.row_index} date={entry.pay_date.isoformat()} reason={invalid_reason}"
-                    )
-                    continue
-                existing = existing_trade_lookup.get(self._match_key(entry.pay_date))
-                if existing is not None:
-                    matched_and_skipped_count += 1
-                    if resolved_dry_run:
-                        skip_payload = {
-                            "row": entry.row_index,
-                            "pay_date": entry.pay_date.isoformat(),
-                            "match_reason": "transaction_date + transaction_type + holding_id",
-                            "existing_trade_id": existing.id,
-                            "existing_transaction_date": None
-                            if existing.transaction_date is None
-                            else existing.transaction_date.isoformat(),
-                            "existing_transaction_type": existing.transaction_type,
-                            "existing_holding_id": existing.holding_id,
-                            "existing_unique_identifier": existing.unique_identifier,
-                        }
-                        dry_run_matches.append(skip_payload)
-                        print(
-                            "DRY-RUN SKIP "
-                            f"row={entry.row_index} date={entry.pay_date.isoformat()} "
-                            f"existing_trade_id={existing.id} reason=date+type+holding"
-                        )
-                    continue
-                create_payload = self._build_create_payload(portfolio_id, entry)
-                if resolved_dry_run:
-                    create_preview = {
-                        "row": entry.row_index,
-                        "pay_date": entry.pay_date.isoformat(),
-                        "create_payload": create_payload,
-                        "confirm_payload_preview": None,
-                    }
-                    dry_run_payloads.append(create_preview)
-                    dry_run_new_trades.append(create_preview)
-                    print(
-                        "DRY-RUN CREATE "
-                        f"row={entry.row_index} date={entry.pay_date.isoformat()} "
-                        f"uid={create_payload['trade']['unique_identifier']}"
-                    )
-                    continue
 
-                created = api.create_trade(create_payload)
-                created_count += 1
-                if created.id is not None:
-                    created_trade_ids.append(created.id)
-                confirmed_count += 1
-                if created.id is not None:
-                    confirmed_trade_ids.append(created.id)
+            managed = [
+                t
+                for t in existing_trades
+                if t.id is not None
+                and t.transaction_date is not None
+                and t.holding_id == int(self.holding_id)
+                and t.transaction_type == self.transaction_type
+            ]
+
+            by_date: dict[date, list[TradeRecord]] = {}
+            for t in managed:
+                by_date.setdefault(t.transaction_date, []).append(t)
+            for group in by_date.values():
+                group.sort(key=lambda x: int(x.id or 0))
+
+            prefix = "DRY-RUN " if resolved_dry_run else ""
+
+            for t in managed:
+                if t.transaction_date not in all_sheet_dates:
+                    reconcile_delete.append(
+                        {
+                            "trade_id": t.id,
+                            "transaction_date": t.transaction_date.isoformat(),
+                            "reason": "pay_date not present in spreadsheet",
+                        },
+                    )
+                    print(
+                        f"{prefix}DELETE trade_id={t.id} date={t.transaction_date.isoformat()} "
+                        "reason=not_in_spreadsheet",
+                    )
+
+            for pay_d, entry in desired_by_date.items():
+                trades_at = list(by_date.get(pay_d, []))
+                extras = trades_at[1:]
+                for ex in extras:
+                    reconcile_delete.append(
+                        {
+                            "trade_id": ex.id,
+                            "transaction_date": pay_d.isoformat(),
+                            "reason": "duplicate trade for same pay_date",
+                        },
+                    )
+                    print(
+                        f"{prefix}DELETE trade_id={ex.id} date={pay_d.isoformat()} reason=duplicate",
+                    )
+
+                primary = trades_at[0] if trades_at else None
+                if primary is None:
+                    create_payload = self._build_create_payload(portfolio_id, entry)
+                    reconcile_add.append(
+                        {
+                            "row": entry.row_index,
+                            "pay_date": pay_d.isoformat(),
+                            "create_payload": create_payload,
+                        },
+                    )
+                    print(
+                        f"{prefix}ADD row={entry.row_index} date={pay_d.isoformat()} "
+                        f"roc={entry.roc_amount} fx={entry.exchange_rate}",
+                    )
+                elif self._trade_matches_entry(primary, entry):
+                    reconcile_noop.append(
+                        {
+                            "row": entry.row_index,
+                            "pay_date": pay_d.isoformat(),
+                            "trade_id": primary.id,
+                            "existing_roc": primary.roc_value,
+                            "existing_exchange_rate": primary.exchange_rate_value,
+                        },
+                    )
+                    print(f"{prefix}NOOP row={entry.row_index} trade_id={primary.id} date={pay_d.isoformat()}")
+                else:
+                    update_payload = self._build_update_payload(portfolio_id, entry)
+                    reconcile_update.append(
+                        {
+                            "row": entry.row_index,
+                            "pay_date": pay_d.isoformat(),
+                            "trade_id": primary.id,
+                            "existing_roc": primary.roc_value,
+                            "existing_exchange_rate": primary.exchange_rate_value,
+                            "desired_roc": float(entry.roc_amount),
+                            "desired_exchange_rate": float(entry.exchange_rate),
+                            "update_payload": update_payload,
+                        },
+                    )
+                    print(
+                        f"{prefix}UPDATE trade_id={primary.id} row={entry.row_index} date={pay_d.isoformat()} "
+                        f"roc {primary.roc_value}->{entry.roc_amount} fx {primary.exchange_rate_value}->{entry.exchange_rate}",
+                    )
+
+            noop_count = len(reconcile_noop)
+
+            if not resolved_dry_run:
+                for item in reconcile_delete:
+                    tid = int(item["trade_id"])
+                    api.delete_trade(tid)
+                    deleted_count += 1
+                    deleted_trade_ids.append(tid)
+
+                for item in reconcile_update:
+                    tid = int(item["trade_id"])
+                    api.update_trade(tid, item["update_payload"])
+                    updated_count += 1
+                    updated_trade_ids.append(tid)
+
+                for item in reconcile_add:
+                    created = api.create_trade(item["create_payload"])
+                    created_count += 1
+                    if created.id is not None:
+                        created_trade_ids.append(created.id)
+
         finally:
             api.close()
 
+        return self._build_result(
+            resolved_dry_run=resolved_dry_run,
+            entries=entries,
+            skipped_rows=skipped_rows,
+            invalid_rows=invalid_rows,
+            existing_trades_count=existing_trades_count,
+            reconcile_add=reconcile_add,
+            reconcile_update=reconcile_update,
+            reconcile_delete=reconcile_delete,
+            reconcile_noop=reconcile_noop,
+            created_count=created_count if not resolved_dry_run else 0,
+            updated_count=updated_count if not resolved_dry_run else 0,
+            deleted_count=deleted_count if not resolved_dry_run else 0,
+            noop_count=noop_count,
+            created_trade_ids=created_trade_ids,
+            updated_trade_ids=updated_trade_ids,
+            deleted_trade_ids=deleted_trade_ids,
+        )
+
+    def _build_result(
+        self,
+        *,
+        resolved_dry_run: bool,
+        entries: list[WorksheetEntry],
+        skipped_rows: list[dict[str, str]],
+        invalid_rows: list[dict[str, Any]],
+        existing_trades_count: int,
+        reconcile_add: list[dict[str, Any]],
+        reconcile_update: list[dict[str, Any]],
+        reconcile_delete: list[dict[str, Any]],
+        reconcile_noop: list[dict[str, Any]],
+        created_count: int,
+        updated_count: int,
+        deleted_count: int,
+        noop_count: int,
+        created_trade_ids: list[int],
+        updated_trade_ids: list[int],
+        deleted_trade_ids: list[int],
+    ) -> dict[str, Any]:
+        """Assemble run() response dict."""
+        dry_add = list(reconcile_add)
+        dry_update = list(reconcile_update)
+        dry_delete = list(reconcile_delete)
+        dry_noop = list(reconcile_noop)
         return {
             "status": "success",
             "dry_run": resolved_dry_run,
@@ -275,50 +425,55 @@ class SharesightTradesSkill(SkillBase):
             "skipped_rows": skipped_rows,
             "invalid_rows_skipped_count": len(invalid_rows),
             "invalid_rows": invalid_rows,
-            "created_count": created_count,
-            "confirmed_count": confirmed_count,
-            "matched_and_skipped_count": matched_and_skipped_count,
             "existing_trades_fetched": existing_trades_count,
+            "reconcile_add": dry_add,
+            "reconcile_update": dry_update,
+            "reconcile_delete": dry_delete,
+            "reconcile_noop": dry_noop,
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "deleted_count": deleted_count,
+            "noop_count": noop_count,
+            "matched_and_skipped_count": noop_count,
             "created_trade_ids": created_trade_ids,
-            "confirmed_trade_ids": confirmed_trade_ids,
-            "dry_run_payloads": dry_run_payloads,
-            "dry_run_matches": dry_run_matches,
-            "dry_run_new_trades": dry_run_new_trades,
+            "updated_trade_ids": updated_trade_ids,
+            "deleted_trade_ids": deleted_trade_ids,
+            "confirmed_count": created_count,
+            "confirmed_trade_ids": list(created_trade_ids),
+            "dry_run_payloads": dry_add,
+            "dry_run_new_trades": dry_add,
+            "dry_run_matches": dry_noop,
             "dry_run_summary": {
                 "worksheet_rows_total": len(entries),
                 "existing_trades_fetched": existing_trades_count,
-                "matched_and_skipped_count": matched_and_skipped_count,
+                "to_add_count": len(dry_add),
+                "to_update_count": len(dry_update),
+                "to_delete_count": len(dry_delete),
+                "noop_count": len(dry_noop),
                 "invalid_rows_skipped_count": len(invalid_rows),
-                "new_to_create_count": len(dry_run_new_trades) if resolved_dry_run else created_count,
-                "new_to_confirm_count": len(dry_run_new_trades) if resolved_dry_run else confirmed_count,
+                "matched_and_skipped_count": noop_count,
             },
         }
+
+    def _trade_matches_entry(self, trade: TradeRecord, entry: WorksheetEntry) -> bool:
+        """Return True if API trade ROC and FX match worksheet within epsilon."""
+        try:
+            want_roc = float(Decimal(str(entry.roc_amount).strip()))
+            want_fx = float(Decimal(str(entry.exchange_rate).strip()))
+        except (InvalidOperation, ValueError):
+            return False
+        return self._floats_match(trade.roc_value, want_roc) and self._floats_match(trade.exchange_rate_value, want_fx)
+
+    def _floats_match(self, left: float | None, right: float | None) -> bool:
+        """Approximate float equality."""
+        if left is None or right is None:
+            return left == right
+        return abs(left - right) <= FLOAT_COMPARE_EPSILON
 
     def _resolve_runtime_dry_run(self, dry_run: bool | str | int | None) -> bool:
         """Resolve configured dry-run with optional runtime override."""
         override = self._coerce_optional_bool(dry_run)
         return self.dry_run if override is None else override
-
-    def _determine_date_window(self, entries: list[WorksheetEntry]) -> tuple[date | None, date | None]:
-        """Return min/max pay dates for querying existing trades."""
-        if not entries:
-            return None, None
-        pay_dates = sorted(entry.pay_date for entry in entries)
-        return pay_dates[0], pay_dates[-1]
-
-    def _match_key(self, pay_date: date) -> tuple[str, str, int]:
-        """Build dedupe key used against existing trades."""
-        return (pay_date.isoformat(), self.transaction_type, int(self.holding_id))
-
-    def _build_existing_trade_lookup(self, trades: list[TradeRecord]) -> dict[tuple[str, str, int], TradeRecord]:
-        """Index existing trades by transaction_date + type + holding."""
-        lookup: dict[tuple[str, str, int], TradeRecord] = {}
-        for trade in trades:
-            if trade.transaction_date is None or trade.holding_id is None:
-                continue
-            key = (trade.transaction_date.isoformat(), trade.transaction_type, trade.holding_id)
-            lookup.setdefault(key, trade)
-        return lookup
 
     def _validate_entry(self, entry: WorksheetEntry) -> str | None:
         """Return validation error message when row cannot be posted."""
@@ -413,6 +568,26 @@ class SharesightTradesSkill(SkillBase):
                 "exchange_rate": float(entry.exchange_rate),
                 "comments": entry.comment_text(),
                 "state": self.created_state,
+            },
+        }
+
+    def _build_update_payload(self, portfolio_id: int, entry: WorksheetEntry) -> dict[str, Any]:
+        """Build PUT /trades/:id.json payload."""
+        unique_identifier = (
+            f"{self.unique_identifier_prefix}-{entry.pay_date.isoformat()}-{entry.roc_amount}-{entry.gross_amount}"
+        )[:255]
+        return {
+            "trade": {
+                "unique_identifier": unique_identifier,
+                "transaction_type": self.transaction_type,
+                "transaction_date": entry.pay_date.strftime(API_DATE_FORMAT),
+                "portfolio_id": portfolio_id,
+                "holding_id": self.holding_id,
+                "price": float(entry.roc_amount),
+                "capital_return_value": float(entry.roc_amount),
+                "paid_on": entry.pay_date.strftime(API_DATE_FORMAT),
+                "exchange_rate": float(entry.exchange_rate),
+                "comments": entry.comment_text(),
             },
         }
 
@@ -518,6 +693,18 @@ class SharesightTradeApiClient:
             raise RuntimeError("Unexpected response from create trade request.")
         return self._parse_trade_record(trade)
 
+    def update_trade(self, trade_id: int, payload: dict[str, Any]) -> TradeRecord:
+        """PUT update trade."""
+        response = self._request_json("PUT", f"/trades/{trade_id}.json", payload=payload)
+        trade = response.get("trade", response)
+        if not isinstance(trade, dict):
+            raise RuntimeError("Unexpected response from update trade request.")
+        return self._parse_trade_record(trade)
+
+    def delete_trade(self, trade_id: int) -> None:
+        """DELETE trade."""
+        self._request_json("DELETE", f"/trades/{trade_id}.json")
+
     def list_trades(
         self,
         portfolio_id: int,
@@ -542,15 +729,36 @@ class SharesightTradeApiClient:
         """No-op hook for API resource cleanup."""
         return None
 
+    def _parse_trade_roc(self, payload: dict[str, Any]) -> float | None:
+        """Best-effort ROC / capital return from API payload."""
+        for key in ("capital_return_value", "price"):
+            raw_val = payload.get(key)
+            if raw_val in (None, ""):
+                continue
+            try:
+                return float(raw_val)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _parse_trade_fx(self, payload: dict[str, Any]) -> float | None:
+        """Exchange rate from API payload."""
+        raw_val = payload.get("exchange_rate")
+        if raw_val in (None, ""):
+            return None
+        try:
+            return float(raw_val)
+        except (TypeError, ValueError):
+            return None
+
     def _parse_trade_record(self, payload: dict[str, Any]) -> TradeRecord:
-        """Extract ID and company_event_id from a trade payload."""
+        """Extract fields from a trade JSON object."""
         trade_id = payload.get("id")
         company_event_id = payload.get("company_event_id")
         transaction_date = payload.get("transaction_date")
         transaction_type = str(payload.get("transaction_type", "")).upper()
         holding_id = payload.get("holding_id")
         unique_identifier = payload.get("unique_identifier")
-        # Sharesight may nest event details; fall back if needed.
         if company_event_id in (None, "") and isinstance(payload.get("company_event"), dict):
             company_event_id = payload["company_event"].get("id")
         return TradeRecord(
@@ -564,6 +772,8 @@ class SharesightTradeApiClient:
             transaction_type=transaction_type,
             holding_id=None if holding_id in (None, "") else int(holding_id),
             unique_identifier=None if unique_identifier in (None, "") else str(unique_identifier),
+            roc_value=self._parse_trade_roc(payload),
+            exchange_rate_value=self._parse_trade_fx(payload),
             raw=payload,
         )
 
@@ -575,7 +785,7 @@ class SharesightTradeApiClient:
         payload: dict[str, Any] | None = None,
         include_auth: bool = True,
     ) -> dict[str, Any]:
-        """Send HTTP request and decode JSON object."""
+        """Send HTTP request and decode JSON response when present."""
         url = path_or_url if path_or_url.startswith("http") else f"{self.api_base_url}{path_or_url}"
         data = None
         headers = {"Accept": "application/json"}
