@@ -4,11 +4,11 @@ excel_path_env_var: OPENCLAW_RBA_FX_EXCEL_PATH
 excel_path: ~/OneDrive/Documents/Finance/Personal CashFlow.xlsx
 worksheet_name: FXRates
 obsidian_log_enabled: true
-obsidian_log_dir: ~/OneDrive/obsidian/OpenClawVault/3_Logs/rba_fx/bobbyd
-obsidian_log_user: bobbyd
+obsidian_log_dir: ~/OneDrive/obsidian/OpenClawVault/3_Logs/rba_fx/aashd
+obsidian_log_user: aashd
 obsidian_log_operator: Chris Cropley
 obsidian_log_environment: iMac
-obsidian_log_config_path: skills/rba_fx/config.yaml
+obsidian_log_config_path: skills/rba_fx/config_aash.yaml
 obsidian_log_command_used: python -m openclaw.skills.rba_fx
 date_column_name: Date
 audusd_column_name: AUDUSD
