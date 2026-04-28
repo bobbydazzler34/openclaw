@@ -17,6 +17,7 @@ from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 from openclaw.skills._base.skill_base import SkillBase
+from openclaw.skills.rba_fx.log_writer import ObsidianRunLogWriter
 
 CSV_URL = "https://www.rba.gov.au/statistics/tables/csv/f11.1-data.csv"
 EXCEL_PATH = "~/OneDrive/Documents/Finance/Personal CashFlow.xlsx"
@@ -26,6 +27,9 @@ DATE_COLUMN = "Date"
 AUDUSD_COLUMN = "AUDUSD"
 USDAUD_COLUMN = "USDAUD"
 REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_LOG_ENV = "local"
+DEFAULT_LOG_OPERATOR = "unknown"
+DEFAULT_OBSIDIAN_USER = "bobbyd"
 
 
 @dataclass(slots=True)
@@ -84,6 +88,45 @@ class RbaFxSkill(SkillBase):
         configured_excel_path = self.config.get("excel_path", EXCEL_PATH)
         return Path(str(configured_excel_path)).expanduser()
 
+    def _write_obsidian_run_log(self, result_payload: dict[str, Any]) -> None:
+        """Write an Obsidian run log when explicitly enabled in config."""
+        if not bool(self.config.get("obsidian_log_enabled", False)):
+            return
+
+        configured_logs_dir = self.config.get("obsidian_log_dir")
+        if not configured_logs_dir:
+            self.logger.warning(
+                "Obsidian logging enabled, but `obsidian_log_dir` is not configured.",
+            )
+            return
+
+        log_writer = ObsidianRunLogWriter(
+            logs_dir=Path(str(configured_logs_dir)).expanduser(),
+            operator=str(self.config.get("obsidian_log_operator", DEFAULT_LOG_OPERATOR)),
+            environment=str(self.config.get("obsidian_log_environment", DEFAULT_LOG_ENV)),
+            obsidian_user=str(self.config.get("obsidian_log_user", DEFAULT_OBSIDIAN_USER)),
+            config_path=str(
+                self.config.get("obsidian_log_config_path", "skills/rba_fx/config.yaml"),
+            ),
+            csv_url=self.csv_url,
+            worksheet_name=self.worksheet_name,
+            env_var_name=self.excel_path_env_var,
+        )
+
+        output_path = log_writer.write_log(
+            result_payload,
+            excel_path_resolved=str(self.excel_path),
+            env_override_used=bool(os.getenv(self.excel_path_env_var)),
+            command_used=str(
+                self.config.get(
+                    "obsidian_log_command_used",
+                    "python - <<'PY' ... RbaFxSkill(...).run() ... PY",
+                ),
+            ),
+            notes=["Generated automatically by RbaFxSkill."],
+        )
+        self.logger.info("Wrote Obsidian run log to %s.", output_path)
+
     def run(self) -> dict[str, Any]:
         """Download RBA FX data, append missing rows, and write the workbook."""
         self.logger.info("Starting RBA FX sync.")
@@ -91,7 +134,7 @@ class RbaFxSkill(SkillBase):
         latest_rates = self._parse_rba_csv(csv_text)
         existing_sheet = self._read_existing_sheet()
         latest_sheet_date = self._get_latest_sheet_date(existing_sheet)
-        updated_sheet, missing_rows, rows_appended = self._merge_new_rows(existing_sheet, latest_rates)
+        _updated_sheet, missing_rows, rows_appended = self._merge_new_rows(existing_sheet, latest_rates)
         self._write_sheet(missing_rows)
 
         result = RunResult(
@@ -109,7 +152,7 @@ class RbaFxSkill(SkillBase):
             "RBA FX sync completed with %s appended rows.",
             rows_appended,
         )
-        return {
+        result_payload = {
             "status": "success",
             "rows_downloaded": result.rows_downloaded,
             "rows_appended": result.rows_appended,
@@ -117,6 +160,8 @@ class RbaFxSkill(SkillBase):
             "workbook_path": result.workbook_path,
             "worksheet_name": result.worksheet_name,
         }
+        self._write_obsidian_run_log(result_payload)
+        return result_payload
 
     def _download_csv(self) -> str:
         """Download the RBA CSV source data."""
