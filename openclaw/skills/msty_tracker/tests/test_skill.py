@@ -107,7 +107,7 @@ def create_test_workbook(workbook_path: Path) -> None:
             worksheet.cell(row=row_index, column=column_index).font = Font(bold=(row_index == 8))
             worksheet.cell(row=row_index, column=column_index).number_format = "dd/mmm/yyyy" if column_index >= 3 else "0.0000"
 
-    dc_sheet = workbook.create_sheet("DC Pavula FY2526")
+    dc_sheet = workbook.create_sheet("CS FY2526")
     dc_sheet.cell(row=6, column=8).value = "MSTY Distributions USD 2025/2026"
     headers = [
         "Pay Date",
@@ -166,7 +166,7 @@ def create_final_state_workbook(workbook_path: Path) -> None:
         for column_index, value in enumerate(values, start=1):
             distributions.cell(row=row_index, column=column_index).value = value
 
-    dc_sheet = workbook.create_sheet("DC Pavula FY2526")
+    dc_sheet = workbook.create_sheet("CS FY2526")
     dc_sheet.cell(row=6, column=8).value = "MSTY Distributions USD 2025/2026"
     headers = [
         "Pay Date",
@@ -321,6 +321,39 @@ class TestMstyTrackerSkill(unittest.TestCase):
             ],
         )
 
+    def test_run_writes_obsidian_log_when_enabled(self) -> None:
+        """A markdown run log is emitted when Obsidian logging is enabled."""
+        response = Mock()
+        response.text = "<html>ignored</html>"
+        response.raise_for_status.return_value = None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            logs_dir = Path(temp_dir) / "logs"
+            create_test_workbook(workbook_path)
+
+            with (
+                patch("openclaw.skills.msty_tracker.skill.requests.get", return_value=response),
+                patch(
+                    "openclaw.skills.msty_tracker.skill.pd.read_html",
+                    return_value=[build_website_table()],
+                ),
+            ):
+                skill = MstyTrackerSkill(excel_path=workbook_path)
+                skill.config["obsidian_log_enabled"] = True
+                skill.config["obsidian_log_dir"] = str(logs_dir)
+                skill.config["obsidian_log_user"] = "bobbyd"
+                skill.config["obsidian_log_operator"] = "Chris Cropley"
+                skill.config["obsidian_log_environment"] = "test"
+                skill.run()
+
+            log_files = list(logs_dir.glob("*.md"))
+            self.assertEqual(len(log_files), 1)
+            self.assertRegex(log_files[0].name, r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_msty_tracker_bobbyd\.md")
+            log_content = log_files[0].read_text(encoding="utf-8")
+            self.assertIn("skill_id: msty_tracker", log_content)
+            self.assertIn('status: "success"', log_content)
+
     def test_run_raises_runtime_error_for_network_failure(self) -> None:
         """Network failures are surfaced as runtime errors."""
         with patch(
@@ -392,7 +425,7 @@ class TestMstyTrackerSkill(unittest.TestCase):
             self.assertEqual(merge_warnings, [])
 
             workbook = load_workbook(workbook_path)
-            dc_sheet = workbook["DC Pavula FY2526"]
+            dc_sheet = workbook["CS FY2526"]
             workbook.close()
 
         self.assertEqual(rows_inserted, 1)
@@ -421,7 +454,7 @@ class TestMstyTrackerSkill(unittest.TestCase):
             workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
             create_test_workbook(workbook_path)
             workbook = load_workbook(workbook_path)
-            workbook["DC Pavula FY2526"].merge_cells("H8:I8")
+            workbook["CS FY2526"].merge_cells("H8:I8")
             workbook.save(workbook_path)
             workbook.close()
 

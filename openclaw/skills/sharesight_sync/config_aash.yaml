@@ -14,5 +14,12 @@ update_existing_payouts_by_id: false # Set to true when you want to update exist
 tax_field_name: non_resident_withholding_tax
 confirmed_state: confirmed
 unconfirmed_state: unconfirmed
+obsidian_log_enabled: true
+obsidian_log_dir: ~/OneDrive/obsidian/OpenClawVault/3_Logs/sharesight_sync/aashd
+obsidian_log_user: aashd
+obsidian_log_operator: Chris Cropley
+obsidian_log_environment: iMac
+obsidian_log_config_path: skills/sharesight_sync/config_aash.yaml
+obsidian_log_command_used: python -c "from openclaw.skills.sharesight_sync.skill import SharesightSyncSkill; print(SharesightSyncSkill(config_path='openclaw/skills/sharesight_sync/config_aash.yaml').run())"
 # payouts_start_date: 2025-04-01
 # payouts_end_date: 2026-03-31

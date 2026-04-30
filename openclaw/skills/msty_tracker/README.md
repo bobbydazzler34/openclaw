@@ -13,8 +13,23 @@ Pull MSTY distribution rows from the YieldMax website, reconcile with your **Dis
 - `excel_path_env_var` — workbook override (default `OPENCLAW_MSTY_TRACKER_EXCEL_PATH`)
 - `update_dc_pavula` — run DC Pavula ROC% sync (default `true`)
 - `dc_pavula_insert_missing_rows` — insert DC rows when no formula-linked row exists (default `false`)
+- `obsidian_log_enabled` — write a markdown run log to Obsidian (default `true` in checked-in configs)
+- `obsidian_log_user` — log identity (`aashd` or `bobbyd`)
+- `obsidian_log_dir` — user-specific vault folder for log files
 
 Add `excel_path` to `config.yaml` if you do not want to use an env var.
+
+## Obsidian run logs
+
+When enabled, each run writes a markdown note named:
+
+- `YYYY-MM-DDTHH-MM-SSZ_msty_tracker_bobbyd.md` (from `config.yaml`)
+- `YYYY-MM-DDTHH-MM-SSZ_msty_tracker_aashd.md` (from `config_aash.yaml`)
+
+Config files:
+
+- `openclaw/skills/msty_tracker/config.yaml` -> `.../3_Logs/msty_tracker/bobbyd`
+- `openclaw/skills/msty_tracker/config_aash.yaml` -> `.../3_Logs/msty_tracker/aashd`
 
 ## Workbook path (order of precedence)
 
@@ -43,6 +58,14 @@ source .venv/bin/activate
 OPENCLAW_MSTY_TRACKER_EXCEL_PATH="/absolute/path/to/workbook.xlsx" \
 PYTHONPATH=/path/to/OpenClaw \
 python -c "from openclaw.skills.msty_tracker.skill import MstyTrackerSkill; print(MstyTrackerSkill(config_path='openclaw/skills/msty_tracker/config.yaml').run())"
+```
+
+For `aashd`, switch `config_path`:
+
+```bash
+OPENCLAW_MSTY_TRACKER_EXCEL_PATH="/absolute/path/to/workbook.xlsx" \
+PYTHONPATH=/path/to/OpenClaw \
+python -c "from openclaw.skills.msty_tracker.skill import MstyTrackerSkill; print(MstyTrackerSkill(config_path='openclaw/skills/msty_tracker/config_aash.yaml').run())"
 ```
 
 If `read_html` fails, try `pip install lxml` in the same venv.

@@ -1,0 +1,15 @@
+enabled: true
+account_id: your_account_id_here
+poll_interval_seconds: 300
+excel_path_env_var: OPENCLAW_MSTY_TRACKER_EXCEL_PATH
+# Safe default: only fill ROC% on DC rows that already link to Distributions.
+# Row insert via openpyxl often damages tables/array formulas - opt in if needed.
+update_dc_pavula: true
+dc_pavula_insert_missing_rows: false
+obsidian_log_enabled: true
+obsidian_log_dir: ~/OneDrive/obsidian/OpenClawVault/3_Logs/msty_tracker/aashd
+obsidian_log_user: aashd
+obsidian_log_operator: Chris Cropley
+obsidian_log_environment: iMac
+obsidian_log_config_path: skills/msty_tracker/config_aash.yaml
+obsidian_log_command_used: python -c "from openclaw.skills.msty_tracker.skill import MstyTrackerSkill; print(MstyTrackerSkill(config_path='openclaw/skills/msty_tracker/config_aash.yaml').run())"

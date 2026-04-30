@@ -17,6 +17,7 @@ from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 from openclaw.skills._base.skill_base import SkillBase
+from openclaw.skills.sharesight_sync.log_writer import ObsidianRunLogWriter
 
 DEFAULT_API_BASE_URL = "https://api.sharesight.com/api/v2"
 DEFAULT_TOKEN_URL = "https://api.sharesight.com/oauth2/token"
@@ -30,6 +31,9 @@ DEFAULT_TAX_FIELD_NAME = "resident_withholding_tax"
 DEFAULT_CONFIRMED_STATE = "confirmed"
 DEFAULT_UNCONFIRMED_STATE = "unconfirmed"
 DEFAULT_UPDATE_EXISTING_PAYOUTS_BY_ID = False
+DEFAULT_LOG_ENV = "local"
+DEFAULT_LOG_OPERATOR = "unknown"
+DEFAULT_OBSIDIAN_USER = "bobbyd"
 DATE_OUTPUT_FORMAT = "%d/%m/%Y"
 HEADER_START_COLUMN = 8
 REQUIRED_HEADERS = {
@@ -279,6 +283,44 @@ class SharesightSyncSkill(SkillBase):
         configured_excel_path = self.config.get("excel_path", DEFAULT_EXCEL_PATH)
         return Path(str(configured_excel_path)).expanduser()
 
+    def _write_obsidian_run_log(self, result_payload: dict[str, Any]) -> None:
+        """Write an Obsidian run log when explicitly enabled in config."""
+        if not bool(self.config.get("obsidian_log_enabled", False)):
+            return
+
+        configured_logs_dir = self.config.get("obsidian_log_dir")
+        if not configured_logs_dir:
+            self.logger.warning(
+                "Obsidian logging enabled, but `obsidian_log_dir` is not configured.",
+            )
+            return
+
+        log_writer = ObsidianRunLogWriter(
+            logs_dir=Path(str(configured_logs_dir)).expanduser(),
+            operator=str(self.config.get("obsidian_log_operator", DEFAULT_LOG_OPERATOR)),
+            environment=str(self.config.get("obsidian_log_environment", DEFAULT_LOG_ENV)),
+            obsidian_user=str(self.config.get("obsidian_log_user", DEFAULT_OBSIDIAN_USER)),
+            config_path=str(
+                self.config.get("obsidian_log_config_path", "skills/sharesight_sync/config.yaml"),
+            ),
+            env_var_name=str(self.config.get("excel_path_env_var", DEFAULT_EXCEL_PATH_ENV_VAR)),
+        )
+
+        output_path = log_writer.write_log(
+            result_payload,
+            excel_path_resolved=str(self.excel_path),
+            env_override_used=bool(os.getenv(str(self.config.get("excel_path_env_var", DEFAULT_EXCEL_PATH_ENV_VAR)))),
+            command_used=str(
+                self.config.get(
+                    "obsidian_log_command_used",
+                    'python -c "from openclaw.skills.sharesight_sync.skill import SharesightSyncSkill; '
+                    'print(SharesightSyncSkill(...).run())"',
+                ),
+            ),
+            notes=["Generated automatically by SharesightSyncSkill."],
+        )
+        self.logger.info("Wrote Obsidian run log to %s.", output_path)
+
     def run(self) -> dict[str, Any]:
         """Update Sharesight unconfirmed payouts from the configured worksheet."""
         self.logger.info(
@@ -349,7 +391,7 @@ class SharesightSyncSkill(SkillBase):
             len(matched_pay_dates),
             " in dry-run mode" if self.dry_run else "",
         )
-        return {
+        result_payload = {
             "status": "success",
             "dry_run": result.dry_run,
             "portfolio_id": result.portfolio_id,
@@ -373,6 +415,8 @@ class SharesightSyncSkill(SkillBase):
             "differing_income_tax_ids": result.differing_income_tax_ids,
             "unconfirmed_transactions_found": result.unconfirmed_payouts_found,
         }
+        self._write_obsidian_run_log(result_payload)
+        return result_payload
 
     def _run_confirm_unconfirmed_flow(
         self,
