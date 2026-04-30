@@ -20,6 +20,7 @@ import pandas as pd
 import requests
 
 from openclaw.skills._base.skill_base import SkillBase
+from openclaw.skills.msty_tracker.log_writer import ObsidianRunLogWriter
 
 MSTY_URL = "https://yieldmaxetfs.com/our-etfs/msty/"
 EXCEL_PATH = "~/OneDrive/Documents/Finance/Personal CashFlow.xlsx"
@@ -30,6 +31,9 @@ DC_PAVULA_WORKSHEET_NAME = "CS FY2526"
 # Safe default: only fill ROC% on rows that already reference Distributions.
 DEFAULT_UPDATE_DC_PAVULA = True
 DEFAULT_DC_PAVULA_INSERT_MISSING_ROWS = False
+DEFAULT_LOG_ENV = "local"
+DEFAULT_LOG_OPERATOR = "unknown"
+DEFAULT_OBSIDIAN_USER = "bobbyd"
 REQUEST_TIMEOUT_SECONDS = 30
 REQUEST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -239,6 +243,44 @@ class MstyTrackerSkill(SkillBase):
 
         return candidate
 
+    def _write_obsidian_run_log(self, result_payload: dict[str, Any]) -> None:
+        """Write an Obsidian run log when explicitly enabled in config."""
+        if not bool(self.config.get("obsidian_log_enabled", False)):
+            return
+
+        configured_logs_dir = self.config.get("obsidian_log_dir")
+        if not configured_logs_dir:
+            self.logger.warning(
+                "Obsidian logging enabled, but `obsidian_log_dir` is not configured.",
+            )
+            return
+
+        log_writer = ObsidianRunLogWriter(
+            logs_dir=Path(str(configured_logs_dir)).expanduser(),
+            operator=str(self.config.get("obsidian_log_operator", DEFAULT_LOG_OPERATOR)),
+            environment=str(self.config.get("obsidian_log_environment", DEFAULT_LOG_ENV)),
+            obsidian_user=str(self.config.get("obsidian_log_user", DEFAULT_OBSIDIAN_USER)),
+            config_path=str(
+                self.config.get("obsidian_log_config_path", "skills/msty_tracker/config.yaml"),
+            ),
+            source_url=self.source_url,
+            env_var_name=str(self.config.get("excel_path_env_var", EXCEL_PATH_ENV_VAR)),
+        )
+
+        output_path = log_writer.write_log(
+            result_payload,
+            excel_path_resolved=str(self.excel_path),
+            env_override_used=bool(os.getenv(str(self.config.get("excel_path_env_var", EXCEL_PATH_ENV_VAR)))),
+            command_used=str(
+                self.config.get(
+                    "obsidian_log_command_used",
+                    "python -c \"from openclaw.skills.msty_tracker.skill import MstyTrackerSkill; print(MstyTrackerSkill(...).run())\"",
+                ),
+            ),
+            notes=["Generated automatically by MstyTrackerSkill."],
+        )
+        self.logger.info("Wrote Obsidian run log to %s.", output_path)
+
     def run(self) -> dict[str, Any]:
         """Fetch MSTY data and return missing worksheet rows without editing the workbook."""
         self.logger.info("Starting MSTY distribution comparison.")
@@ -286,7 +328,7 @@ class MstyTrackerSkill(SkillBase):
             len(missing_records),
             len(different_records),
         )
-        return {
+        result_payload = {
             "status": "success",
             "source_url": self.source_url,
             "workbook_path": str(self.excel_path),
@@ -307,6 +349,8 @@ class MstyTrackerSkill(SkillBase):
             "matching_distributions": [record.as_dict() for record in matching_records],
             "dc_pending_entries": dc_pending_entries,
         }
+        self._write_obsidian_run_log(result_payload)
+        return result_payload
 
     def _download_source_html(self) -> str:
         """Download the MSTY ETF page."""

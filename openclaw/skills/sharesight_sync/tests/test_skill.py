@@ -253,6 +253,36 @@ class TestSharesightSyncSkill(unittest.TestCase):
             ],
         )
 
+    def test_run_writes_obsidian_log_when_enabled(self) -> None:
+        """A markdown run log is emitted when Obsidian logging is enabled."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            logs_dir = Path(temp_dir) / "logs"
+            create_workbook_fixture(workbook_path)
+            skill = SharesightSyncSkill(
+                excel_path=workbook_path,
+                client_id="client-id",
+                client_secret="client-secret",
+                dry_run=True,
+                api_factory=lambda: FakeApiClient([]),
+            )
+            skill.config["obsidian_log_enabled"] = True
+            skill.config["obsidian_log_dir"] = str(logs_dir)
+            skill.config["obsidian_log_user"] = "bobbyd"
+            skill.config["obsidian_log_operator"] = "Chris Cropley"
+            skill.config["obsidian_log_environment"] = "test"
+            skill.run()
+
+            log_files = list(logs_dir.glob("*.md"))
+            self.assertEqual(len(log_files), 1)
+            self.assertRegex(
+                log_files[0].name,
+                r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_sharesight_sync_bobbyd\.md",
+            )
+            log_content = log_files[0].read_text(encoding="utf-8")
+            self.assertIn("skill_id: sharesight_sync", log_content)
+            self.assertIn('status: "success"', log_content)
+
     def test_run_skips_rows_with_time_only_pay_date_values(self) -> None:
         """Rows with a time-only pay date are reported and ignored."""
         with tempfile.TemporaryDirectory() as temp_dir:
