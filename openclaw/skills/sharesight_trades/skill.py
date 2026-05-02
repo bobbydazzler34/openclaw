@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 from openclaw.skills._base.skill_base import SkillBase
+from openclaw.skills.sharesight_trades.log_writer import ObsidianRunLogWriter
 
 DEFAULT_API_BASE_URL = "https://api.sharesight.com/api/v2"
 DEFAULT_TOKEN_URL = "https://api.sharesight.com/oauth2/token"
@@ -39,6 +40,9 @@ REQUIRED_HEADERS = {
 }
 EXCHANGE_RATE_COLUMN = 20  # column T
 FLOAT_COMPARE_EPSILON = 1e-6
+DEFAULT_LOG_ENV = "local"
+DEFAULT_LOG_OPERATOR = "unknown"
+DEFAULT_OBSIDIAN_USER = "bobbyd"
 
 
 @dataclass(slots=True)
@@ -71,6 +75,7 @@ class TradeRecord:
     unique_identifier: str | None
     roc_value: float | None
     exchange_rate_value: float | None
+    price_value: float | None
     raw: dict[str, Any]
 
 
@@ -174,6 +179,44 @@ class SharesightTradesSkill(SkillBase):
         if self.transaction_type != DEFAULT_TRANSACTION_TYPE:
             raise ValueError("sharesight_trades only supports transaction_type CAPITAL_RETURN.")
 
+    def _write_obsidian_run_log(self, result_payload: dict[str, Any]) -> None:
+        """Write an Obsidian run log when explicitly enabled in config."""
+        if not bool(self.config.get("obsidian_log_enabled", False)):
+            return
+
+        configured_logs_dir = self.config.get("obsidian_log_dir")
+        if not configured_logs_dir:
+            self.logger.warning(
+                "Obsidian logging enabled, but `obsidian_log_dir` is not configured.",
+            )
+            return
+
+        log_writer = ObsidianRunLogWriter(
+            logs_dir=Path(str(configured_logs_dir)).expanduser(),
+            operator=str(self.config.get("obsidian_log_operator", DEFAULT_LOG_OPERATOR)),
+            environment=str(self.config.get("obsidian_log_environment", DEFAULT_LOG_ENV)),
+            obsidian_user=str(self.config.get("obsidian_log_user", DEFAULT_OBSIDIAN_USER)),
+            config_path=str(
+                self.config.get("obsidian_log_config_path", "skills/sharesight_trades/config.yaml"),
+            ),
+            api_base_url=self.api_base_url,
+            env_var_name=self.excel_path_env_var,
+        )
+
+        output_path = log_writer.write_log(
+            result_payload,
+            excel_path_resolved=str(self.excel_path),
+            env_override_used=bool(os.getenv(self.excel_path_env_var)),
+            command_used=str(
+                self.config.get(
+                    "obsidian_log_command_used",
+                    "python - <<'PY' ... SharesightTradesSkill(...).run() ... PY",
+                ),
+            ),
+            notes=["Generated automatically by SharesightTradesSkill."],
+        )
+        self.logger.info("Wrote Obsidian run log to %s.", output_path)
+
     def run(self, dry_run: bool | str | int | None = None) -> dict[str, Any]:
         """Reconcile trades: add missing, update mismatched ROC/FX, delete orphans."""
         resolved_dry_run = self._resolve_runtime_dry_run(dry_run)
@@ -224,7 +267,7 @@ class SharesightTradesSkill(SkillBase):
         try:
             if not all_sheet_dates:
                 noop_count = 0
-                return self._build_result(
+                early_result = self._build_result(
                     resolved_dry_run=resolved_dry_run,
                     entries=entries,
                     skipped_rows=skipped_rows,
@@ -242,6 +285,8 @@ class SharesightTradesSkill(SkillBase):
                     updated_trade_ids=[],
                     deleted_trade_ids=[],
                 )
+                self._write_obsidian_run_log(early_result)
+                return early_result
 
             portfolio_id = api.resolve_portfolio_id(self.portfolio_name)
             start_date = min(all_sheet_dates)
@@ -277,11 +322,13 @@ class SharesightTradesSkill(SkillBase):
                             "trade_id": t.id,
                             "transaction_date": t.transaction_date.isoformat(),
                             "reason": "pay_date not present in spreadsheet",
+                            "existing_price": t.price_value,
                         },
                     )
                     print(
                         f"{prefix}DELETE trade_id={t.id} date={t.transaction_date.isoformat()} "
-                        "reason=not_in_spreadsheet",
+                        "reason=not_in_spreadsheet"
+                        + self._existing_price_print_suffix(t.price_value),
                     )
 
             for pay_d, entry in desired_by_date.items():
@@ -293,10 +340,12 @@ class SharesightTradesSkill(SkillBase):
                             "trade_id": ex.id,
                             "transaction_date": pay_d.isoformat(),
                             "reason": "duplicate trade for same pay_date",
+                            "existing_price": ex.price_value,
                         },
                     )
                     print(
-                        f"{prefix}DELETE trade_id={ex.id} date={pay_d.isoformat()} reason=duplicate",
+                        f"{prefix}DELETE trade_id={ex.id} date={pay_d.isoformat()} reason=duplicate"
+                        + self._existing_price_print_suffix(ex.price_value),
                     )
 
                 primary = trades_at[0] if trades_at else None
@@ -321,9 +370,13 @@ class SharesightTradesSkill(SkillBase):
                             "trade_id": primary.id,
                             "existing_roc": primary.roc_value,
                             "existing_exchange_rate": primary.exchange_rate_value,
+                            "existing_price": primary.price_value,
                         },
                     )
-                    print(f"{prefix}NOOP row={entry.row_index} trade_id={primary.id} date={pay_d.isoformat()}")
+                    print(
+                        f"{prefix}NOOP row={entry.row_index} trade_id={primary.id} date={pay_d.isoformat()}"
+                        + self._existing_price_print_suffix(primary.price_value),
+                    )
                 else:
                     update_payload = self._build_update_payload(portfolio_id, entry)
                     reconcile_update.append(
@@ -333,6 +386,7 @@ class SharesightTradesSkill(SkillBase):
                             "trade_id": primary.id,
                             "existing_roc": primary.roc_value,
                             "existing_exchange_rate": primary.exchange_rate_value,
+                            "existing_price": primary.price_value,
                             "desired_roc": float(entry.roc_amount),
                             "desired_exchange_rate": float(entry.exchange_rate),
                             "update_payload": update_payload,
@@ -340,7 +394,8 @@ class SharesightTradesSkill(SkillBase):
                     )
                     print(
                         f"{prefix}UPDATE trade_id={primary.id} row={entry.row_index} date={pay_d.isoformat()} "
-                        f"roc {primary.roc_value}->{entry.roc_amount} fx {primary.exchange_rate_value}->{entry.exchange_rate}",
+                        f"roc {primary.roc_value}->{entry.roc_amount} fx {primary.exchange_rate_value}->{entry.exchange_rate}"
+                        + self._existing_price_print_suffix(primary.price_value),
                     )
 
             noop_count = len(reconcile_noop)
@@ -367,7 +422,7 @@ class SharesightTradesSkill(SkillBase):
         finally:
             api.close()
 
-        return self._build_result(
+        final_result = self._build_result(
             resolved_dry_run=resolved_dry_run,
             entries=entries,
             skipped_rows=skipped_rows,
@@ -385,6 +440,8 @@ class SharesightTradesSkill(SkillBase):
             updated_trade_ids=updated_trade_ids,
             deleted_trade_ids=deleted_trade_ids,
         )
+        self._write_obsidian_run_log(final_result)
+        return final_result
 
     def _build_result(
         self,
@@ -456,13 +513,31 @@ class SharesightTradesSkill(SkillBase):
         }
 
     def _trade_matches_entry(self, trade: TradeRecord, entry: WorksheetEntry) -> bool:
-        """Return True if API trade ROC and FX match worksheet within epsilon."""
+        """Return True if API trade ROC and FX match worksheet and API price field is ~zero or absent."""
         try:
             want_roc = float(Decimal(str(entry.roc_amount).strip()))
             want_fx = float(Decimal(str(entry.exchange_rate).strip()))
         except (InvalidOperation, ValueError):
             return False
-        return self._floats_match(trade.roc_value, want_roc) and self._floats_match(trade.exchange_rate_value, want_fx)
+        if not (
+            self._floats_match(trade.roc_value, want_roc)
+            and self._floats_match(trade.exchange_rate_value, want_fx)
+        ):
+            return False
+        return self._api_price_is_normalized(trade)
+
+    def _api_price_is_normalized(self, trade: TradeRecord) -> bool:
+        """True when Sharesight `price` is missing or ~0 (ROC-only semantics)."""
+        if trade.price_value is None:
+            return True
+        return abs(trade.price_value) <= FLOAT_COMPARE_EPSILON
+
+    @staticmethod
+    def _existing_price_print_suffix(price_value: float | None) -> str:
+        """Append API price to stdout when present."""
+        if price_value is None:
+            return ""
+        return f" existing_price={price_value}"
 
     def _floats_match(self, left: float | None, right: float | None) -> bool:
         """Approximate float equality."""
@@ -562,7 +637,7 @@ class SharesightTradesSkill(SkillBase):
                 "unique_identifier": unique_identifier,
                 "transaction_date": entry.pay_date.strftime(API_DATE_FORMAT),
                 "transaction_type": self.transaction_type,
-                "price": float(entry.roc_amount),
+                "price": 0.0,
                 "capital_return_value": float(entry.roc_amount),
                 "paid_on": entry.pay_date.strftime(API_DATE_FORMAT),
                 "exchange_rate": float(entry.exchange_rate),
@@ -583,7 +658,7 @@ class SharesightTradesSkill(SkillBase):
                 "transaction_date": entry.pay_date.strftime(API_DATE_FORMAT),
                 "portfolio_id": portfolio_id,
                 "holding_id": self.holding_id,
-                "price": float(entry.roc_amount),
+                "price": 0.0,
                 "capital_return_value": float(entry.roc_amount),
                 "paid_on": entry.pay_date.strftime(API_DATE_FORMAT),
                 "exchange_rate": float(entry.exchange_rate),
@@ -751,6 +826,16 @@ class SharesightTradeApiClient:
         except (TypeError, ValueError):
             return None
 
+    def _parse_trade_price_only(self, payload: dict[str, Any]) -> float | None:
+        """Sharesight `price` field only (separate from capital_return_value / ROC)."""
+        raw_val = payload.get("price")
+        if raw_val in (None, ""):
+            return None
+        try:
+            return float(raw_val)
+        except (TypeError, ValueError):
+            return None
+
     def _parse_trade_record(self, payload: dict[str, Any]) -> TradeRecord:
         """Extract fields from a trade JSON object."""
         trade_id = payload.get("id")
@@ -774,6 +859,7 @@ class SharesightTradeApiClient:
             unique_identifier=None if unique_identifier in (None, "") else str(unique_identifier),
             roc_value=self._parse_trade_roc(payload),
             exchange_rate_value=self._parse_trade_fx(payload),
+            price_value=self._parse_trade_price_only(payload),
             raw=payload,
         )
 

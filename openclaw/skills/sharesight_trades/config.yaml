@@ -13,3 +13,10 @@ transaction_type: CAPITAL_RETURN
 created_state: confirmed
 confirmed_state: confirmed
 unique_identifier_prefix: OPENCLAW-CS-ROC
+obsidian_log_enabled: true
+obsidian_log_dir: ~/OneDrive/obsidian/OpenClawVault/3_Logs/sharesight_trades/bobbyd
+obsidian_log_user: bobbyd
+obsidian_log_operator: Chris Cropley
+obsidian_log_environment: iMac
+obsidian_log_config_path: skills/sharesight_trades/config.yaml
+obsidian_log_command_used: python -m openclaw.skills.sharesight_trades
