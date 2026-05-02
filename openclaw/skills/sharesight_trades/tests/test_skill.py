@@ -19,7 +19,18 @@ def _trade(
     roc: float,
     fx: float,
     holding_id: int = 1234,
+    price_value: float | None = None,
 ) -> TradeRecord:
+    raw: dict[str, object] = {
+        "id": trade_id,
+        "transaction_date": transaction_date.isoformat() if transaction_date else None,
+        "transaction_type": "CAPITAL_RETURN",
+        "holding_id": holding_id,
+        "capital_return_value": roc,
+        "exchange_rate": fx,
+    }
+    if price_value is not None:
+        raw["price"] = price_value
     return TradeRecord(
         id=trade_id,
         company_event_id=None,
@@ -29,14 +40,8 @@ def _trade(
         unique_identifier=None,
         roc_value=roc,
         exchange_rate_value=fx,
-        raw={
-            "id": trade_id,
-            "transaction_date": transaction_date.isoformat() if transaction_date else None,
-            "transaction_type": "CAPITAL_RETURN",
-            "holding_id": holding_id,
-            "capital_return_value": roc,
-            "exchange_rate": fx,
-        },
+        price_value=price_value,
+        raw=raw,
     )
 
 
@@ -111,7 +116,7 @@ class FakeApiClient:
         td = datetime.strptime(str(trade["transaction_date"]), "%Y-%m-%d").date()
         roc = float(trade["capital_return_value"])
         fx = float(trade["exchange_rate"])
-        return _trade(trade_id=tid, transaction_date=td, roc=roc, fx=fx)
+        return _trade(trade_id=tid, transaction_date=td, roc=roc, fx=fx, price_value=0.0)
 
     def update_trade(self, trade_id: int, payload: dict[str, object]) -> TradeRecord:
         """Record update."""
@@ -120,7 +125,9 @@ class FakeApiClient:
         td = datetime.strptime(str(trade["transaction_date"]), "%Y-%m-%d").date()
         roc = float(trade["capital_return_value"])
         fx = float(trade["exchange_rate"])
-        return _trade(trade_id=trade_id, transaction_date=td, roc=roc, fx=fx)
+        pv = trade.get("price")
+        price_out = None if pv in (None, "") else float(pv)
+        return _trade(trade_id=trade_id, transaction_date=td, roc=roc, fx=fx, price_value=price_out)
 
     def delete_trade(self, trade_id: int) -> None:
         """Record delete."""
@@ -170,7 +177,7 @@ class TestSharesightTradesSkill(unittest.TestCase):
         self.assertEqual(payload["transaction_type"], "CAPITAL_RETURN")
         self.assertEqual(payload["transaction_date"], "2026-01-23")
         self.assertEqual(payload["paid_on"], "2026-01-23")
-        self.assertEqual(payload["price"], 12.34)
+        self.assertEqual(payload["price"], 0.0)
         self.assertEqual(payload["capital_return_value"], 12.34)
         self.assertEqual(payload["exchange_rate"], 1.45)
         self.assertEqual(payload["comments"], "94.69% 23-Jan ROC. Gross Amt $571.47")
@@ -258,6 +265,36 @@ class TestSharesightTradesSkill(unittest.TestCase):
         self.assertEqual(result["dry_run_summary"]["to_update_count"], 1)
         self.assertEqual(len(result["reconcile_update"]), 1)
         self.assertEqual(result["reconcile_update"][0]["trade_id"], 20995465)
+
+    def test_dry_run_update_when_roc_fx_match_but_api_price_nonzero(self) -> None:
+        """Matching ROC/FX with duplicate non-zero API price still triggers update to clear price."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            create_workbook_fixture(workbook_path)
+            api = FakeApiClient()
+            d = datetime(2026, 1, 23).date()
+            api.existing_trades = [
+                _trade(trade_id=20995465, transaction_date=d, roc=12.34, fx=1.45, price_value=12.34),
+            ]
+            skill = SharesightTradesSkill(
+                excel_path=workbook_path,
+                worksheet_name="CS FY2526",
+                portfolio_name="DC Pavula",
+                holding_id=1234,
+                client_id="client-id",
+                client_secret="client-secret",
+                dry_run=True,
+                api_factory=lambda: api,
+            )
+
+            result = skill.run()
+
+        self.assertEqual(result["dry_run_summary"]["to_update_count"], 1)
+        self.assertEqual(result["dry_run_summary"]["noop_count"], 0)
+        self.assertEqual(len(result["reconcile_update"]), 1)
+        item = result["reconcile_update"][0]
+        self.assertEqual(item["trade_id"], 20995465)
+        self.assertEqual(item["existing_price"], 12.34)
 
     def test_live_update_and_delete_orphan(self) -> None:
         """Update mismatched trade; delete orphan date not on sheet."""

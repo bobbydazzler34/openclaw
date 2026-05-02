@@ -14,3 +14,10 @@ transaction_type: CAPITAL_RETURN
 created_state: confirmed
 confirmed_state: confirmed
 unique_identifier_prefix: OPENCLAW-CS-ROC-AASH
+obsidian_log_enabled: true
+obsidian_log_dir: ~/OneDrive/obsidian/OpenClawVault/3_Logs/sharesight_trades/aashd
+obsidian_log_user: aashd
+obsidian_log_operator: Chris Cropley
+obsidian_log_environment: iMac
+obsidian_log_config_path: skills/sharesight_trades/config_aash.yaml
+obsidian_log_command_used: python -m openclaw.skills.sharesight_trades

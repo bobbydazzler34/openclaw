@@ -44,7 +44,7 @@ class TestObsidianRunLogWriter(unittest.TestCase):
             self.assertIn('skill_id: rba_fx', content)
             self.assertIn('status: "success"', content)
             self.assertIn("rows_appended: 3", content)
-            self.assertRegex(content, r'run_id: "\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_rba_fx_obsidian_aashd"')
+            self.assertRegex(content, r'run_id: "\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_rba_fx_aashd"')
             self.assertIn('"rows_appended": 3', content)
             self.assertIn("## Runtime Result (Raw)", content)
             self.assertIn("- [ ] `FXRates` worksheet updated", content)
