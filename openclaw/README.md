@@ -6,12 +6,12 @@
 
 Skills are self-contained modules under `openclaw/skills/`. Each skill directory contains:
 
-- `skill.py` for the skill implementation
+- `skill.py` (or a named entry module such as `stessa_add_transaction.py`) for the skill implementation
 - `config.yaml` for skill-specific configuration
 - `README.md` for how to run and configure the skill
 - `tests/` for unit-level test coverage
 
-Per-skill guides: [rba_fx](skills/rba_fx/README.md), [msty_tracker](skills/msty_tracker/README.md), [sharesight_sync](skills/sharesight_sync/README.md), [sharesight_trades](skills/sharesight_trades/README.md).
+Per-skill guides: [rba_fx](skills/rba_fx/README.md), [msty_tracker](skills/msty_tracker/README.md), [sharesight_sync](skills/sharesight_sync/README.md), [sharesight_trades](skills/sharesight_trades/README.md), [stessa_add_transaction](skills/stessa_add_transaction/README.md).
 
 Shared behavior lives in `openclaw/skills/_base/skill_base.py`, which provides common logging and config-loading utilities.
 
