@@ -1,0 +1,19 @@
+enabled: true
+
+# Stessa web login (required for Playwright)
+stessa_username: "bobbydazzler34@gmail.com"
+stessa_password: "cdm9SEL#JLq@3sT"
+
+# Gemini: API key from environment (name is configurable)
+gemini_api_key_env: GOOGLE_API_KEY
+llm_model: gemini-2.5-flash
+
+# Optional: connect to existing Chromium instead of launching headless
+playwright_cdp_url: http://127.0.0.1:9222
+
+# Recommended for unattended Telegram usage:
+# - Start Chromium manually once, solve human verification, keep session signed in.
+# - Point playwright_cdp_url at that browser.
+require_cdp_session: true
+cdp_require_authenticated_session: true
+allow_login_fallback: false

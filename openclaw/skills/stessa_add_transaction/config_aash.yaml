@@ -1,0 +1,12 @@
+enabled: true
+
+stessa_username: "your-email@example.com"
+stessa_password: "your-password"
+
+gemini_api_key_env: GOOGLE_API_KEY
+llm_model: gemini-2.5-flash
+
+# playwright_cdp_url: http://127.0.0.1:9222
+require_cdp_session: true
+cdp_require_authenticated_session: true
+allow_login_fallback: false
