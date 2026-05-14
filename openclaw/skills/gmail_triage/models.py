@@ -57,3 +57,18 @@ class TriageRunSummary(BaseModel):
     success: bool = True
     important_entries: list[EmailTriageLogEntry] = Field(default_factory=list)
     deletable_entries: list[EmailTriageLogEntry] = Field(default_factory=list)
+
+
+ComposeStatus = Literal["drafted", "failed", "missing_recipient"]
+
+
+class ComposedEmail(BaseModel):
+    """Result of a natural-language compose (new outbound draft, not a reply)."""
+
+    to: str | None
+    subject: str
+    body: str
+    instruction: str
+    composed_at: datetime
+    draft_id: str | None = None
+    status: ComposeStatus = "failed"

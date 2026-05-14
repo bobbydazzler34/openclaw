@@ -128,3 +128,7 @@ class GmailTriageStore:
             .upsert(row, on_conflict="email_id")
             .execute(),
         )
+
+    def insert_composed_draft(self, row: dict[str, Any]) -> None:
+        """Insert one row into ``gmail_composed_drafts`` (append-only audit)."""
+        self._safe_call(lambda: self._client.table("gmail_composed_drafts").insert(row).execute())

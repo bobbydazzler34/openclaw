@@ -147,6 +147,22 @@ def _assert_draft_url(path: str) -> None:
         raise AssertionError(msg)
 
 
+def _build_outbound_mime(
+    *,
+    account_email: str,
+    to_addr: str,
+    subject: str,
+    body: str,
+) -> str:
+    """Build RFC 822 for a new outbound message (not a reply)."""
+    msg = StdlibEmailMessage(policy=email.policy.SMTP)
+    msg["From"] = account_email
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.set_content(body, charset="utf-8", subtype="plain")
+    return msg.as_string()
+
+
 def _build_reply_mime(
     *,
     account_email: str,
@@ -354,4 +370,51 @@ class MatonGmailClient:
             msg = "Gmail drafts.create response missing id"
             raise RuntimeError(msg)
         logger.info("Created draft id=%s for reply_to=%s", draft_id, reply_to_id)
+        return draft_id
+
+    async def create_new_draft(
+        self,
+        account: str,
+        to: str,
+        subject: str,
+        body: str,
+    ) -> str:
+        """Create a new outbound Gmail draft (not a reply). Never sends.
+
+        Args:
+            account: From address (MIME ``From``).
+            to: Recipient email address.
+            subject: Subject line.
+            body: Plain-text body.
+
+        Returns:
+            Gmail draft id.
+
+        Raises:
+            AssertionError: If the URL is not a drafts-only endpoint.
+        """
+        path = _drafts_create_path(self._base_url)
+        _assert_draft_url(path)
+
+        mime_str = _build_outbound_mime(
+            account_email=account or self._account_email,
+            to_addr=to.strip(),
+            subject=subject,
+            body=body,
+        )
+        raw = _to_gmail_raw_b64url(mime_str)
+        message_body: dict[str, Any] = {"raw": raw}
+
+        response = await self._request(
+            "POST",
+            path,
+            json={"message": message_body},
+            headers={**self._headers, "Content-Type": "application/json"},
+        )
+        result = response.json()
+        draft_id = str(result.get("id", "") or "")
+        if not draft_id:
+            msg = "Gmail drafts.create response missing id"
+            raise RuntimeError(msg)
+        logger.info("Created new draft id=%s to=%s", draft_id, to)
         return draft_id

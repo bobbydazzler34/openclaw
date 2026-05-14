@@ -6,18 +6,113 @@ import asyncio
 import logging
 import traceback
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from openclaw.skills._base.skill_base import SkillBase
 from openclaw.skills.gmail_triage.classifier import classify_email
+from openclaw.skills.gmail_triage.composer import compose_email
 from openclaw.skills.gmail_triage.config import load_config
 from openclaw.skills.gmail_triage.drafter import create_draft_response
 from openclaw.skills.gmail_triage.gmail_client import MatonGmailClient
-from openclaw.skills.gmail_triage.models import EmailTriageLogEntry, TriageRunSummary
-from openclaw.skills.gmail_triage.obsidian_logger import write_summary
+from openclaw.skills.gmail_triage.models import ComposedEmail, EmailTriageLogEntry, TriageRunSummary
+from openclaw.skills.gmail_triage.obsidian_logger import append_compose_section, write_summary
 from openclaw.skills.gmail_triage.supabase_client import GmailTriageStore
 
 logger = logging.getLogger(__name__)
+
+
+def format_compose_reply(composed: ComposedEmail) -> str:
+    """Format a short user-facing message for Telegram or Discord."""
+    if composed.status == "drafted" and composed.draft_id:
+        return (
+            "✅ Draft saved\n"
+            f"To: {composed.to}\n"
+            f"Subject: {composed.subject}\n"
+            "Check Gmail drafts to review before sending."
+        )
+    if composed.status == "missing_recipient":
+        return (
+            "⚠️ Could not compose draft — recipient email address missing.\n"
+            "Try: @sempiternal compose email to john@example.com about the invoice"
+        )
+    return "❌ Draft failed — check OpenClaw logs for details."
+
+
+def _composed_supabase_row(
+    account: str,
+    composed: ComposedEmail,
+    triggered_by: Literal["telegram", "discord"],
+) -> dict[str, Any]:
+    return {
+        "account": account,
+        "instruction": composed.instruction,
+        "to_address": composed.to,
+        "subject": composed.subject,
+        "body_preview": (composed.body or "")[:200],
+        "draft_id": composed.draft_id,
+        "triggered_by": triggered_by,
+        "status": composed.status,
+    }
+
+
+async def run_compose(
+    instruction: str,
+    triggered_by: Literal["telegram", "discord"],
+    *,
+    store: GmailTriageStore | None = None,
+    gmail_client: MatonGmailClient | None = None,
+) -> ComposedEmail:
+    """Compose a new outbound Gmail draft from natural language (never sends)."""
+    cfg = load_config()
+    st = store or GmailTriageStore(cfg.supabase_url, cfg.supabase_service_key)
+    gm = gmail_client or MatonGmailClient(
+        base_url=cfg.maton_base_url,
+        api_key=cfg.maton_api_key,
+        account_email=cfg.gmail_account_email,
+    )
+
+    composed = await compose_email(instruction, None, api_key=cfg.gemini_api_key)
+
+    def persist_and_log(c: ComposedEmail) -> None:
+        st.insert_composed_draft(_composed_supabase_row(cfg.gmail_account_email, c, triggered_by))
+        append_compose_section(
+            c,
+            triggered_by,
+            vault_path=cfg.obsidian_vault_path,
+            log_subfolder=cfg.skill_log_subfolder,
+        )
+
+    if composed.status == "failed":
+        await asyncio.to_thread(persist_and_log, composed)
+        return composed
+
+    if composed.status == "missing_recipient" or composed.to is None:
+        final = composed.model_copy(update={"status": "missing_recipient", "to": None, "draft_id": None})
+        await asyncio.to_thread(persist_and_log, final)
+        return final
+
+    try:
+        draft_id = await gm.create_new_draft(
+            cfg.gmail_account_email,
+            composed.to,
+            composed.subject,
+            composed.body,
+        )
+        final = composed.model_copy(update={"draft_id": draft_id, "status": "drafted"})
+    except Exception as exc:  # noqa: BLE001
+        logger.error("create_new_draft failed: %s", exc, exc_info=True)
+        final = composed.model_copy(update={"draft_id": None, "status": "failed"})
+
+    await asyncio.to_thread(persist_and_log, final)
+    return final
+
+
+def run_compose_sync(
+    instruction: str,
+    triggered_by: Literal["telegram", "discord"],
+) -> ComposedEmail:
+    """Synchronous wrapper for non-async callers (e.g. quick scripts)."""
+    return asyncio.run(run_compose(instruction, triggered_by))
 
 
 class GmailTriageSkill(SkillBase):

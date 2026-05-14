@@ -11,11 +11,13 @@ logger = logging.getLogger(__name__)
 
 MODEL = "gemini-2.5-flash-lite"
 
-SYSTEM = (
+DRAFT_SYSTEM_PROMPT = (
     "Draft a professional, concise reply. Do not include a subject line. "
     "Do not sign off with a specific name — use '[Your name]' as placeholder. "
     "Keep it under 150 words."
 )
+
+SYSTEM = DRAFT_SYSTEM_PROMPT
 
 
 def create_draft_response(email: EmailMessage, *, api_key: str) -> str:
@@ -34,7 +36,7 @@ def create_draft_response(email: EmailMessage, *, api_key: str) -> str:
         f"{email.body_text[:12000]}"
     )
     try:
-        return generate_text(SYSTEM, user, model=MODEL, api_key=api_key).strip()
+        return generate_text(DRAFT_SYSTEM_PROMPT, user, model=MODEL, api_key=api_key).strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Drafter failed for email_id=%s: %s", email.id, type(exc).__name__)
         return ""

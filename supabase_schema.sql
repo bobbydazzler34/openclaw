@@ -46,3 +46,26 @@ create policy "service_role_only_runs"
 create index if not exists idx_scans_email_id on gmail_triage_scans(email_id);
 create index if not exists idx_scans_account on gmail_triage_scans(account);
 create index if not exists idx_runs_account on gmail_triage_runs(account);
+
+-- Composed outbound drafts (Telegram / Discord), audit only
+create table if not exists gmail_composed_drafts (
+  id              uuid primary key default uuid_generate_v4(),
+  account         text not null,
+  instruction     text not null,
+  to_address      text,
+  subject         text,
+  body_preview    text,
+  draft_id        text,
+  composed_at     timestamptz default now(),
+  triggered_by    text check (triggered_by in ('telegram', 'discord')),
+  status          text check (status in ('drafted', 'failed', 'missing_recipient'))
+);
+
+alter table gmail_composed_drafts enable row level security;
+
+create policy "service_role_only_composed"
+  on gmail_composed_drafts
+  using (auth.role() = 'service_role');
+
+create index if not exists idx_composed_account on gmail_composed_drafts(account);
+create index if not exists idx_composed_at on gmail_composed_drafts(composed_at);

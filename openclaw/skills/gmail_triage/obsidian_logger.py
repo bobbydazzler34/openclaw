@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from openclaw.skills.gmail_triage.models import TriageRunSummary
+from openclaw.skills.gmail_triage.models import ComposedEmail, TriageRunSummary
 
 logger = logging.getLogger(__name__)
 
@@ -131,4 +131,62 @@ def write_summary(
         return out_path
     except Exception as exc:  # noqa: BLE001
         logger.warning("Obsidian log write failed: %s", exc)
+        return None
+
+
+def append_compose_section(
+    composed: ComposedEmail,
+    triggered_by: str,
+    *,
+    vault_path: str,
+    log_subfolder: str,
+) -> Path | None:
+    """Append a compose block to the daily note ``gmail-triage-YYYY-MM-DD.md``.
+
+    Uses local calendar date. Does not raise on I/O errors.
+
+    Args:
+        composed: Compose result.
+        triggered_by: ``telegram`` or ``discord``.
+        vault_path: Obsidian vault root.
+        log_subfolder: Subfolder under the vault.
+
+    Returns:
+        Path written/appended, or ``None`` on failure.
+    """
+    try:
+        now_local = datetime.now().astimezone()
+        day = f"{now_local:%Y-%m-%d}"
+        rel = Path(log_subfolder.strip("/").replace("\\", "/"))
+        out_dir = Path(vault_path).expanduser() / rel
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"gmail-triage-{day}.md"
+
+        to_disp = composed.to or "(none)"
+        subj = composed.subject or "(no subject)"
+        inst = composed.instruction.replace("\r\n", "\n").replace("\r", "\n")
+        status = composed.status
+        time_s = f"{now_local:%H:%M:%S}"
+
+        block = [
+            "",
+            f"## Composed Draft — {time_s}",
+            "",
+            f"**Triggered by:** {triggered_by}",
+            f"**To:** {to_disp}",
+            f"**Subject:** {subj}",
+            f"**Instruction:** {inst}",
+            f"**Status:** {status}",
+            "",
+        ]
+        text = "\n".join(block)
+        if out_path.exists():
+            existing = out_path.read_text(encoding="utf-8")
+            out_path.write_text(existing.rstrip() + "\n" + text, encoding="utf-8")
+        else:
+            out_path.write_text(text.lstrip("\n"), encoding="utf-8")
+        logger.info("Appended compose section to %s", out_path)
+        return out_path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Obsidian compose append failed: %s", exc)
         return None
