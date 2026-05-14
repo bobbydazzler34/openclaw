@@ -15,7 +15,7 @@ from openclaw.skills.gmail_triage.config import load_config
 from openclaw.skills.gmail_triage.drafter import create_draft_response
 from openclaw.skills.gmail_triage.gmail_client import MatonGmailClient
 from openclaw.skills.gmail_triage.models import ComposedEmail, EmailTriageLogEntry, TriageRunSummary
-from openclaw.skills.gmail_triage.obsidian_logger import append_compose_section, write_summary
+from openclaw.skills.gmail_triage.obsidian_logger import write_compose_log, write_summary
 from openclaw.skills.gmail_triage.supabase_client import GmailTriageStore
 
 logger = logging.getLogger(__name__)
@@ -75,9 +75,10 @@ async def run_compose(
 
     def persist_and_log(c: ComposedEmail) -> None:
         st.insert_composed_draft(_composed_supabase_row(cfg.gmail_account_email, c, triggered_by))
-        append_compose_section(
+        write_compose_log(
             c,
             triggered_by,
+            account_email=cfg.gmail_account_email,
             vault_path=cfg.obsidian_vault_path,
             log_subfolder=cfg.skill_log_subfolder,
         )

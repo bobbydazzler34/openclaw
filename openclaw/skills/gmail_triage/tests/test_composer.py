@@ -47,7 +47,7 @@ class RunComposeTests(unittest.TestCase):
 
             with patch("openclaw.skills.gmail_triage.skill.load_config", return_value=_cfg()):
                 with patch("openclaw.skills.gmail_triage.skill.compose_email", new=AsyncMock(return_value=missing)):
-                    with patch("openclaw.skills.gmail_triage.skill.append_compose_section"):
+                    with patch("openclaw.skills.gmail_triage.skill.write_compose_log"):
                         out = await run_compose(
                             "say hello without any email",
                             "discord",
@@ -79,7 +79,7 @@ class RunComposeTests(unittest.TestCase):
 
             with patch("openclaw.skills.gmail_triage.skill.load_config", return_value=_cfg()):
                 with patch("openclaw.skills.gmail_triage.skill.compose_email", new=AsyncMock(return_value=ok)):
-                    with patch("openclaw.skills.gmail_triage.skill.append_compose_section"):
+                    with patch("openclaw.skills.gmail_triage.skill.write_compose_log"):
                         out = await run_compose(
                             "email john@example.com about invoice",
                             "telegram",

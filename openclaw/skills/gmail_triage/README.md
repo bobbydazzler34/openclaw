@@ -138,7 +138,7 @@ run_compose_sync("email a@b.com about x", "telegram")
 ## Obsidian logs
 
 - **Triage:** per-run file `{UTC}_gmail_triage_{tag}.md` (same stem pattern as `rba_fx`).
-- **Compose:** append-only sections in a **daily** note `gmail-triage-{YYYY-MM-DD}.md` under `SKILL_LOG_SUBFOLDER`.
+- **Compose:** per-run file `{UTC}_gmail_compose_{tag}.md` (same stem pattern as triage; `gmail_compose` label) under `SKILL_LOG_SUBFOLDER`.
 
 Obsidian write failures are logged and do **not** fail the skill.
 
