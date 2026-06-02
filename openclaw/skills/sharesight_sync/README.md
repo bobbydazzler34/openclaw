@@ -16,6 +16,7 @@ Read payout fields from a configured Excel worksheet and update **unconfirmed** 
 - `dry_run` — avoid API writes when enabled
 - `tax_field_name`, `confirmed_state`, `unconfirmed_state`
 - `update_existing_payouts_by_id`, optional `payouts_start_date` / `payouts_end_date`
+- When dates are omitted, the skill uses worksheet min/max Pay Date; the Sharesight `end_date` is max Pay Date **+ 1 day** so payouts on the last row are included (API appears to treat `end_date` as exclusive).
 
 ## Workbook path (order of precedence)
 

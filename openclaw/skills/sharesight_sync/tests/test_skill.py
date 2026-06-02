@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 import os
 from pathlib import Path
 import tempfile
@@ -11,10 +11,12 @@ import unittest
 from openpyxl import Workbook, load_workbook
 
 from openclaw.skills.sharesight_sync.skill import (
+    PAYOUT_LIST_END_DATE_BUFFER_DAYS,
     PayoutRecord,
     PortfolioRecord,
     SharesightApiClient,
     SharesightSyncSkill,
+    WorksheetEntry,
 )
 
 
@@ -157,6 +159,69 @@ class TestSharesightSyncSkill(unittest.TestCase):
         self.assertEqual(skill.token_url, "https://api.sharesight.com/oauth/token")
         self.assertEqual(skill.tax_field_name, "resident_withholding_tax")
         self.assertEqual(skill.confirmed_state, "confirmed")
+
+    def test_sharesight_list_payouts_end_date_buffers_worksheet_derived_end_only(self) -> None:
+        """Worksheet max pay dates need +1 day for Sharesight list_payouts inclusion."""
+        skill = SharesightSyncSkill(
+            client_id="client-id",
+            client_secret="client-secret",
+            api_factory=lambda: FakeApiClient([]),
+        )
+        worksheet_end = date(2026, 5, 29)
+        self.assertEqual(
+            skill._sharesight_list_payouts_end_date(
+                worksheet_end,
+                buffer_worksheet_end=True,
+            ),
+            worksheet_end + timedelta(days=PAYOUT_LIST_END_DATE_BUFFER_DAYS),
+        )
+        self.assertEqual(
+            skill._sharesight_list_payouts_end_date(
+                worksheet_end,
+                buffer_worksheet_end=False,
+            ),
+            worksheet_end,
+        )
+        self.assertIsNone(
+            skill._sharesight_list_payouts_end_date(None, buffer_worksheet_end=True),
+        )
+
+    def test_determine_payout_date_window_marks_worksheet_bounds_for_buffering(self) -> None:
+        """Auto-derived windows flag the API end date for buffering."""
+        skill = SharesightSyncSkill(
+            client_id="client-id",
+            client_secret="client-secret",
+            api_factory=lambda: FakeApiClient([]),
+        )
+        entries = {
+            date(2026, 1, 5): WorksheetEntry(
+                pay_date=date(2026, 1, 5),
+                income_percent="1",
+                income_amount="2",
+                gross_amount="3",
+                foreign_tax_withheld="4",
+                excess_tax="5",
+                exchange_rate="6",
+            ),
+            date(2026, 1, 12): WorksheetEntry(
+                pay_date=date(2026, 1, 12),
+                income_percent="1",
+                income_amount="2",
+                gross_amount="3",
+                foreign_tax_withheld="4",
+                excess_tax="5",
+                exchange_rate="6",
+            ),
+        }
+        start, end, buffer_end = skill._determine_payout_date_window(entries)
+        self.assertEqual(start, date(2026, 1, 5))
+        self.assertEqual(end, date(2026, 1, 12))
+        self.assertTrue(buffer_end)
+
+        skill.payouts_end_date = date(2026, 5, 30)
+        start, end, buffer_end = skill._determine_payout_date_window(entries)
+        self.assertEqual(end, date(2026, 5, 30))
+        self.assertFalse(buffer_end)
 
     def test_constructor_uses_excel_path_from_environment_variable(self) -> None:
         """The skill can override the workbook path via environment variable."""
@@ -394,7 +459,7 @@ class TestSharesightSyncSkill(unittest.TestCase):
         self.assertEqual(result["unmatched_pay_dates"], ["09/01/2026"])
         self.assertEqual(result["skipped_worksheet_rows"], [])
         self.assertEqual(api.resolve_portfolio_calls, ["DC Pavula"])
-        self.assertEqual(api.list_payouts_calls, [(1201759, date(2026, 1, 5), date(2026, 1, 12))])
+        self.assertEqual(api.list_payouts_calls, [(1201759, date(2026, 1, 5), date(2026, 1, 13))])
         self.assertTrue(api.closed)
 
         first_payload = api.updated_payloads[0][1]["payout"]

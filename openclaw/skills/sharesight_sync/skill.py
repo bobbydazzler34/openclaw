@@ -34,6 +34,8 @@ DEFAULT_UPDATE_EXISTING_PAYOUTS_BY_ID = False
 DEFAULT_LOG_ENV = "local"
 DEFAULT_LOG_OPERATOR = "unknown"
 DEFAULT_OBSIDIAN_USER = "bobbyd"
+# Sharesight list_payouts end_date appears exclusive; buffer includes the worksheet max pay day.
+PAYOUT_LIST_END_DATE_BUFFER_DAYS = 1
 DATE_OUTPUT_FORMAT = "%d/%m/%Y"
 HEADER_START_COLUMN = 8
 REQUIRED_HEADERS = {
@@ -341,11 +343,17 @@ class SharesightSyncSkill(SkillBase):
 
         try:
             portfolio = api.resolve_portfolio(self.portfolio_name)
-            start_date, end_date = self._determine_payout_date_window(worksheet_entries)
+            start_date, end_date, buffer_api_end = self._determine_payout_date_window(
+                worksheet_entries,
+            )
+            api_end_date = self._sharesight_list_payouts_end_date(
+                end_date,
+                buffer_worksheet_end=buffer_api_end,
+            )
             payouts = api.list_payouts(
                 portfolio.id,
                 start_date=start_date,
-                end_date=end_date,
+                end_date=api_end_date,
             )
 
             if self.update_existing_payouts_by_id:
@@ -405,6 +413,7 @@ class SharesightSyncSkill(SkillBase):
             "unconfirmed_state": self.unconfirmed_state,
             "payouts_start_date": None if start_date is None else start_date.isoformat(),
             "payouts_end_date": None if end_date is None else end_date.isoformat(),
+            "payouts_api_end_date": None if api_end_date is None else api_end_date.isoformat(),
             "unconfirmed_payouts_found": result.unconfirmed_payouts_found,
             "matched_and_updated": result.matched_and_updated,
             "matched_pay_dates": result.matched_pay_dates,
@@ -670,14 +679,30 @@ class SharesightSyncSkill(SkillBase):
     def _determine_payout_date_window(
         self,
         worksheet_entries: dict[date, WorksheetEntry],
-    ) -> tuple[date | None, date | None]:
-        """Return the payout query window, defaulting to worksheet pay-date bounds."""
+    ) -> tuple[date | None, date | None, bool]:
+        """Return payout bounds and whether the API end date should be buffered.
+
+        When bounds come from the worksheet, the returned end date is the latest
+        Pay Date in Excel. Callers should pass that through
+        `_sharesight_list_payouts_end_date` before `list_payouts`.
+        """
         if self.payouts_start_date is not None or self.payouts_end_date is not None:
-            return self.payouts_start_date, self.payouts_end_date
+            return self.payouts_start_date, self.payouts_end_date, False
         if not worksheet_entries:
-            return None, None
+            return None, None, False
         pay_dates = sorted(worksheet_entries)
-        return pay_dates[0], pay_dates[-1]
+        return pay_dates[0], pay_dates[-1], True
+
+    def _sharesight_list_payouts_end_date(
+        self,
+        end_date: date | None,
+        *,
+        buffer_worksheet_end: bool,
+    ) -> date | None:
+        """Extend worksheet-derived end dates so Sharesight includes the last pay day."""
+        if end_date is None or not buffer_worksheet_end:
+            return end_date
+        return end_date + timedelta(days=PAYOUT_LIST_END_DATE_BUFFER_DAYS)
 
     def _locate_header_row(self, worksheet: Worksheet) -> int:
         """Find the worksheet row containing the required column headers."""
