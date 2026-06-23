@@ -1,0 +1,1 @@
+"""FareFynder synthetic auth monitor."""

@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenClaw FareFynder synthetic auth monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openclaw
+WorkingDirectory=/home/aeternum/src/OpenClaw/openclaw/skills/farefynder_monitor
+Environment=PYTHONPATH=/home/aeternum/src/OpenClaw
+EnvironmentFile=/etc/openclaw/secrets.env
+ExecStart=/home/aeternum/src/OpenClaw/.venv/bin/python -m openclaw.skills.farefynder_monitor.farefynder_monitor
+
+[Install]
+WantedBy=multi-user.target

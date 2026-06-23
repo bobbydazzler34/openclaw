@@ -1,0 +1,10 @@
+[Unit]
+Description=Run FareFynder auth check every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=farefynder-monitor.service
+
+[Install]
+WantedBy=timers.target

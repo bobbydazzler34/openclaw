@@ -1,0 +1,2 @@
+check_name: synthetic_login
+http_timeout_seconds: 10
