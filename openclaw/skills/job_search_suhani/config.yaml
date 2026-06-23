@@ -1,0 +1,25 @@
+email:
+  recipient: "bobbydazzler34@gmail.com"
+  subject_prefix: "Retail jobs - Fountain Gate / Berwick / Cranbourne"
+
+search:
+  locations:
+    - "Fountain Gate VIC 3805"
+    - "Berwick VIC 3806"
+    - "Cranbourne VIC 3977"
+  keywords:
+    - "retail assistant"
+    - "sales associate"
+    - "customer service"
+    - "retail team member"
+  work_types:
+    - "Casual/Vacation"
+    - "Part Time"
+
+retailer_sites:
+  - name: "Kmart"
+    enabled: false
+    search_url: "https://jobs.kmart.com.au/KMARTAUNZ/go/Store-Team-Member-Jobs/"
+    note: "SAP SuccessFactors career site. Inspect live HTML before enabling."
+
+always_send: false

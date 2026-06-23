@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenClaw job search digest for Suhani
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/aeternum/src/OpenClaw
+Environment=PYTHONPATH=/home/aeternum/src/OpenClaw
+EnvironmentFile=/home/aeternum/.config/openclaw/job-search-suhani.env
+# Env file: SUPABASE_URL, SUPABASE_KEY, MATON_API_KEY, MATON_BASE_URL, GMAIL_ACCOUNT_EMAIL
+# Or point EnvironmentFile at ~/.config/openclaw/openclaw.env if vars are shared with gmail_triage.
+ExecStart=/home/aeternum/src/OpenClaw/.venv/bin/python -m openclaw.skills.job_search_suhani.job_search
+
+[Install]
+WantedBy=multi-user.target

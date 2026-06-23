@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily retail job search for Suhani (07:30)
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+Persistent=true
+Unit=job-search-suhani.service
+
+[Install]
+WantedBy=timers.target

@@ -69,3 +69,15 @@ create policy "service_role_only_composed"
 
 create index if not exists idx_composed_account on gmail_composed_drafts(account);
 create index if not exists idx_composed_at on gmail_composed_drafts(composed_at);
+
+-- job_search_suhani: deduplication store for seen job listings
+create table if not exists seen_jobs (
+  job_id text primary key,
+  source text not null,
+  title text,
+  company text,
+  url text,
+  first_seen timestamptz not null default now()
+);
+
+create index if not exists idx_seen_jobs_source on seen_jobs(source);
