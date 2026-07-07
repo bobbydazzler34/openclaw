@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenClaw flight search (SerpApi → Discord)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openclaw
+WorkingDirectory=/home/aeternum/src/OpenClaw/openclaw/skills/flight_search
+Environment=PYTHONPATH=/home/aeternum/src/OpenClaw
+EnvironmentFile=/etc/openclaw/secrets.env
+ExecStart=/home/aeternum/src/OpenClaw/.venv/bin/python -m openclaw.skills.flight_search.flight_search --once
+
+[Install]
+WantedBy=multi-user.target

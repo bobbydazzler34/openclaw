@@ -49,3 +49,4 @@ htmlcov/
 *.pfx
 credentials*.json
 secrets*.json
+openclaw/skills/flight_search/quota_state.json
