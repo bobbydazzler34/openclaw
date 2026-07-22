@@ -26,7 +26,7 @@ MSTY_URL = "https://yieldmaxetfs.com/our-etfs/msty/"
 EXCEL_PATH = "~/OneDrive/Documents/Finance/Personal CashFlow.xlsx"
 EXCEL_PATH_ENV_VAR = "OPENCLAW_MSTY_TRACKER_EXCEL_PATH"
 WORKSHEET_NAME = "Distributions"
-DC_PAVULA_WORKSHEET_NAME = "CS FY2526"
+DC_PAVULA_WORKSHEET_NAME = "CS FY2627"
 # openpyxl insert_rows + row copy breaks many real workbooks (tables, array formulas, merges).
 # Safe default: only fill ROC% on rows that already reference Distributions.
 DEFAULT_UPDATE_DC_PAVULA = True
@@ -78,6 +78,9 @@ DC_PAVULA_HEADERS = [
 DC_PAVULA_START_COLUMN = 8
 DC_PAVULA_END_COLUMN = 20
 DC_PAVULA_ROC_COLUMN = 10
+# Align with sharesight_sync DATE_OUTPUT_FORMAT so formula Pay Date cells read as dates.
+DC_PAVULA_PAY_DATE_FORMAT = "dd/mm/yyyy"
+GENERIC_NUMBER_FORMATS = frozenset({"General", "@"})
 DIST_SHEET_REF_PATTERN = re.compile(r"Distributions!\$?[BF]\$?(\d+)")
 
 
@@ -648,6 +651,8 @@ class MstyTrackerSkill(SkillBase):
                     dc_row_index,
                 )
 
+            self._apply_dc_pavula_pay_date_format(dc_sheet, dc_header_row, dc_row_index)
+
             roc_cell = dc_sheet.cell(row=dc_row_index, column=DC_PAVULA_ROC_COLUMN)
             preserved_format = roc_cell.number_format
             current_roc = self._normalize_optional_percentage(roc_cell.value)
@@ -848,6 +853,36 @@ class MstyTrackerSkill(SkillBase):
         target_dimensions = worksheet.row_dimensions[target_row_index]
         target_dimensions.height = source_dimensions.height
         target_dimensions.hidden = source_dimensions.hidden
+
+    def _find_dc_pavula_pay_date_format_template(
+        self,
+        worksheet: Worksheet,
+        header_row_index: int,
+        target_row_index: int,
+    ) -> str:
+        """Return the Pay Date number format to use for a DC Pavula data row."""
+        for row_index in range(target_row_index - 1, header_row_index, -1):
+            number_format = worksheet.cell(
+                row=row_index,
+                column=DC_PAVULA_START_COLUMN,
+            ).number_format
+            if number_format and number_format not in GENERIC_NUMBER_FORMATS:
+                return number_format
+        return DC_PAVULA_PAY_DATE_FORMAT
+
+    def _apply_dc_pavula_pay_date_format(
+        self,
+        worksheet: Worksheet,
+        header_row_index: int,
+        target_row_index: int,
+    ) -> None:
+        """Ensure Pay Date formula cells keep a date number format for downstream sync."""
+        pay_date_cell = worksheet.cell(row=target_row_index, column=DC_PAVULA_START_COLUMN)
+        pay_date_cell.number_format = self._find_dc_pavula_pay_date_format_template(
+            worksheet,
+            header_row_index,
+            target_row_index,
+        )
 
     def _copy_dc_pavula_row(
         self,

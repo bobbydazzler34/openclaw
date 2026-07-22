@@ -13,7 +13,12 @@ from openpyxl.styles import Font
 import pandas as pd
 import requests
 
-from openclaw.skills.msty_tracker.skill import DistributionRecord, MstyTrackerSkill
+from openclaw.skills.msty_tracker.skill import (
+    DC_PAVULA_PAY_DATE_FORMAT,
+    DC_PAVULA_WORKSHEET_NAME,
+    DistributionRecord,
+    MstyTrackerSkill,
+)
 
 
 PUBLIC_TEST_WORKBOOK_PATH = Path("/Users/chriscropley/Public/Personal CashFlow.xlsx")
@@ -107,7 +112,7 @@ def create_test_workbook(workbook_path: Path) -> None:
             worksheet.cell(row=row_index, column=column_index).font = Font(bold=(row_index == 8))
             worksheet.cell(row=row_index, column=column_index).number_format = "dd/mmm/yyyy" if column_index >= 3 else "0.0000"
 
-    dc_sheet = workbook.create_sheet("CS FY2526")
+    dc_sheet = workbook.create_sheet(DC_PAVULA_WORKSHEET_NAME)
     dc_sheet.cell(row=6, column=8).value = "MSTY Distributions USD 2025/2026"
     headers = [
         "Pay Date",
@@ -139,7 +144,12 @@ def create_test_workbook(workbook_path: Path) -> None:
     dc_sheet["S8"] = "=1"
     for column_index in range(8, 20):
         dc_sheet.cell(row=8, column=column_index).font = Font(bold=False)
-        dc_sheet.cell(row=8, column=column_index).number_format = "0.00" if column_index == 10 else "General"
+        if column_index == 8:
+            dc_sheet.cell(row=8, column=column_index).number_format = DC_PAVULA_PAY_DATE_FORMAT
+        elif column_index == 10:
+            dc_sheet.cell(row=8, column=column_index).number_format = "0.00"
+        else:
+            dc_sheet.cell(row=8, column=column_index).number_format = "General"
 
     workbook.save(workbook_path)
     workbook.close()
@@ -166,7 +176,7 @@ def create_final_state_workbook(workbook_path: Path) -> None:
         for column_index, value in enumerate(values, start=1):
             distributions.cell(row=row_index, column=column_index).value = value
 
-    dc_sheet = workbook.create_sheet("CS FY2526")
+    dc_sheet = workbook.create_sheet(DC_PAVULA_WORKSHEET_NAME)
     dc_sheet.cell(row=6, column=8).value = "MSTY Distributions USD 2025/2026"
     headers = [
         "Pay Date",
@@ -208,7 +218,9 @@ def create_final_state_workbook(workbook_path: Path) -> None:
     for row_index in range(8, 12):
         for column_index in range(8, 20):
             dc_sheet.cell(row=row_index, column=column_index).font = Font(bold=False)
-            if column_index == 10:
+            if column_index == 8:
+                dc_sheet.cell(row=row_index, column=column_index).number_format = DC_PAVULA_PAY_DATE_FORMAT
+            elif column_index == 10:
                 dc_sheet.cell(row=row_index, column=column_index).number_format = "0.00"
             else:
                 dc_sheet.cell(row=row_index, column=column_index).number_format = "General"
@@ -425,7 +437,7 @@ class TestMstyTrackerSkill(unittest.TestCase):
             self.assertEqual(merge_warnings, [])
 
             workbook = load_workbook(workbook_path)
-            dc_sheet = workbook["CS FY2526"]
+            dc_sheet = workbook[DC_PAVULA_WORKSHEET_NAME]
             workbook.close()
 
         self.assertEqual(rows_inserted, 1)
@@ -444,9 +456,45 @@ class TestMstyTrackerSkill(unittest.TestCase):
         self.assertEqual(dc_sheet["J9"].value, 96.35)
         self.assertEqual(dc_sheet["H10"].value, "=Distributions!F7")
         self.assertEqual(dc_sheet["I10"].value, "=Distributions!B7")
+        self.assertEqual(dc_sheet["H10"].number_format, DC_PAVULA_PAY_DATE_FORMAT)
         self.assertEqual(dc_sheet["J10"].value, 0.0)
         self.assertEqual(dc_sheet["J11"].value, 80.04)
         self.assertEqual(dc_sheet["J12"].value, 94.34)
+
+    def test_write_dc_pavula_sheet_restores_pay_date_format_on_existing_rows(self) -> None:
+        """General Pay Date format is replaced with the row-above date format."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
+            create_final_state_workbook(workbook_path)
+            workbook = load_workbook(workbook_path)
+            dc_sheet = workbook[DC_PAVULA_WORKSHEET_NAME]
+            dc_sheet["H10"].number_format = "General"
+            workbook.save(workbook_path)
+            workbook.close()
+
+            skill = MstyTrackerSkill(
+                excel_path=workbook_path,
+                dc_pavula_insert_missing_rows=True,
+            )
+            skill._write_dc_pavula_sheet(
+                [
+                    DistributionRecord(
+                        distros="0.9999",
+                        declared_date="17/Dec/2025",
+                        ex_date="18/Dec/2025",
+                        record_date="18/Dec/2025",
+                        payable_date="19/Dec/2025",
+                        roc_percent=0.0,
+                    ),
+                ],
+            )
+
+            workbook = load_workbook(workbook_path)
+            dc_sheet = workbook[DC_PAVULA_WORKSHEET_NAME]
+            pay_date_format = dc_sheet["H10"].number_format
+            workbook.close()
+
+        self.assertEqual(pay_date_format, DC_PAVULA_PAY_DATE_FORMAT)
 
     def test_write_dc_pavula_merge_preflight_reports_overlap(self) -> None:
         """Merged ranges spanning H–T on a DC row produce dc_merge_warnings."""
@@ -454,7 +502,7 @@ class TestMstyTrackerSkill(unittest.TestCase):
             workbook_path = Path(temp_dir) / "Personal CashFlow.xlsx"
             create_test_workbook(workbook_path)
             workbook = load_workbook(workbook_path)
-            workbook["CS FY2526"].merge_cells("H8:I8")
+            workbook[DC_PAVULA_WORKSHEET_NAME].merge_cells("H8:I8")
             workbook.save(workbook_path)
             workbook.close()
 
