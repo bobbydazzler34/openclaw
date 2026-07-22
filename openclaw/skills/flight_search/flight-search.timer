@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily OpenClaw flight search
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=flight-search.service
+
+[Install]
+WantedBy=timers.target

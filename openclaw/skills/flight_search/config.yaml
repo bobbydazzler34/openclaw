@@ -1,0 +1,51 @@
+http_timeout_seconds: 30
+default_top_n: 5
+deep_search: false
+gl: au
+hl: en
+currency: AUD
+
+#flights_only to skip the calendar step entirely and use only SerpApi
+search_mode: calendar_then_flights
+
+calendar:
+  window_days: 14
+  top_dates: 10
+
+routes:
+  # - name: melbourne_to_san_francisco
+  #   origin: MEL
+  #   destination: SFO
+  #   trip_type: one_way
+  #   outbound_date_rule:
+  #     type: days_out
+  #     days: 177
+  #   adults: 4
+  #   children: 1
+  #   top_n: 5
+
+  # - name: las_vegas_to_melbourne
+  #   origin: LAS
+  #   destination: MEL
+  #   trip_type: one_way
+  #   outbound_date_rule:
+  #     type: days_out
+  #     days: 193
+  #   adults: 4
+  #   children: 1
+
+  # Example multi-city route (uncomment to enable):
+  - name: mel_sfo_las_mel_loop
+    trip_type: multi_city
+    legs:
+      - origin: MEL
+        destination: SFO
+        date: "2026-12-26"
+        #date_rule: { type: days_out, days: 177 }
+      - origin: LAX
+        destination: MEL
+        date: "2027-01-12"
+        #date_rule: { type: days_out, days: 193 }        
+    adults: 4
+    children: 1
+    top_n: 5
