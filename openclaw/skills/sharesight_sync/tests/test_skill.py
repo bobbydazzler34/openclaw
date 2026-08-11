@@ -653,6 +653,7 @@ class TestSharesightSyncSkill(unittest.TestCase):
             create_workbook_fixture(workbook_path, duplicate_pay_date=True)
             skill = SharesightSyncSkill(
                 excel_path=workbook_path,
+                worksheet_name="DC Pavula FY2526",
                 client_id="client-id",
                 client_secret="client-secret",
                 api_factory=lambda: FakeApiClient([]),
@@ -660,6 +661,73 @@ class TestSharesightSyncSkill(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "duplicate Pay Date 05/01/2026"):
                 skill.run()
+
+    def test_read_worksheet_entries_resolves_pay_date_from_distributions_formula(self) -> None:
+        """Stale/missing Pay Date formula cache still resolves via Distributions!F."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "DC Pavula.xlsx"
+            workbook = Workbook()
+            distributions = workbook.active
+            distributions.title = "Distributions"
+            distributions.cell(row=70, column=2).value = 0.2083
+            distributions.cell(row=70, column=6).value = datetime(2026, 8, 7)
+
+            fx_rates = workbook.create_sheet("FXRates")
+            fx_rates.cell(row=1, column=1).value = "Date"
+            fx_rates.cell(row=1, column=2).value = "AUDUSD"
+            fx_rates.cell(row=1, column=3).value = "USDAUD"
+            fx_rates.cell(row=2, column=1).value = datetime(2026, 8, 7)
+            fx_rates.cell(row=2, column=2).value = 0.7029
+
+            dc_sheet = workbook.create_sheet("CS FY2627")
+            headers = [
+                "Pay Date",
+                "Dist / Share",
+                "ROC%",
+                "Inc%",
+                "ROC $",
+                "Inc $",
+                "Gross Amt",
+                "Tax",
+                "GA-Tax",
+                "Excess Tax",
+                "Act Tax",
+                "FXRates",
+            ]
+            for offset, header in enumerate(headers, start=8):
+                dc_sheet.cell(row=7, column=offset).value = header
+            dc_sheet["C4"] = "=15/100"
+            for row_index, units in enumerate([3287, 1464, 776, 371, 749], start=8):
+                dc_sheet.cell(row=row_index, column=4).value = units
+            dc_sheet.cell(row=13, column=4).value = 855
+            dc_sheet.cell(row=8, column=8).value = "=Distributions!F70"
+            dc_sheet.cell(row=8, column=8).number_format = "dd/mm/yyyy"
+            dc_sheet.cell(row=8, column=9).value = "=Distributions!B70"
+            dc_sheet.cell(row=8, column=10).value = 97.24
+            dc_sheet.cell(row=8, column=11).value = "=100-J8"
+            dc_sheet.cell(row=8, column=13).value = "=(K8/100)*ROUND(SUM($D$8:$D$12/5)+SUM($D$13),0)*I8"
+            dc_sheet.cell(row=8, column=14).value = "=SUM(L8:M8)"
+            dc_sheet.cell(row=8, column=15).value = "=N8-P8"
+            dc_sheet.cell(row=8, column=17).value = "=L8*$C$4"
+            dc_sheet.cell(row=8, column=20).value = "=VLOOKUP(H8,FXRates!$A$1:$C$10000,2,FALSE)"
+            workbook.save(workbook_path)
+            workbook.close()
+
+            skill = SharesightSyncSkill(
+                excel_path=workbook_path,
+                worksheet_name="CS FY2627",
+                client_id="client-id",
+                client_secret="client-secret",
+                api_factory=lambda: FakeApiClient([]),
+            )
+            entries, skipped = skill._read_worksheet_entries()
+
+        self.assertEqual(skipped, [])
+        self.assertIn(date(2026, 8, 7), entries)
+        entry = entries[date(2026, 8, 7)]
+        self.assertEqual(entry.exchange_rate, "0.7029")
+        self.assertNotEqual(entry.gross_amount, "0")
+        self.assertNotEqual(entry.income_amount, "0")
 
     def test_constructor_requires_api_credentials_when_not_explicitly_supplied(self) -> None:
         """The skill raises a clear error when Sharesight API credentials are missing."""
@@ -670,6 +738,7 @@ class TestSharesightSyncSkill(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Sharesight client ID was not provided"):
                 SharesightSyncSkill(
                     excel_path=workbook_path,
+                    worksheet_name="DC Pavula FY2526",
                     client_id_env="MISSING_SHARESIGHT_CLIENT_ID",
                     client_secret_env="MISSING_SHARESIGHT_CLIENT_SECRET",
                     api_factory=lambda: FakeApiClient([]),
