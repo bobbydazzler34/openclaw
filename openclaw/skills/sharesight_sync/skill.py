@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable, Protocol
 from urllib import error, parse, request
 
@@ -47,6 +48,20 @@ REQUIRED_HEADERS = {
     "Excess Tax": 17,
     "FXRates": 20,
 }
+# Pay Date cells are often `=Distributions!Fnn` formulas; openpyxl data_only needs Excel cache.
+DIST_PAY_DATE_REF_PATTERN = re.compile(r"Distributions!\$?F\$?(\d+)", re.IGNORECASE)
+DIST_SHARE_REF_PATTERN = re.compile(r"Distributions!\$?B\$?(\d+)", re.IGNORECASE)
+SIMPLE_FRACTION_PATTERN = re.compile(r"^=\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*$")
+FX_RATES_SHEET_NAME = "FXRates"
+FX_RATE_DATE_COLUMN = 1
+FX_RATE_AUDUSD_COLUMN = 2
+TAX_RATE_CELL = "C4"
+HOLDINGS_START_ROW = 8
+HOLDINGS_END_ROW = 12
+HOLDINGS_EXTRA_ROW = 13
+DIST_SHARE_COLUMN = 9
+ROC_PERCENT_COLUMN = 10
+HOLDINGS_COLUMN = 4
 
 
 @dataclass(slots=True)
@@ -606,29 +621,48 @@ class SharesightSyncSkill(SkillBase):
     def _read_worksheet_entries(self) -> tuple[dict[date, WorksheetEntry], list[dict[str, str]]]:
         """Load exact pay-date matches from the configured worksheet."""
         workbook = self.workbook_loader(self.excel_path, data_only=True, read_only=True)
+        # Formula fallback needs random cell access across sheets; read_only cannot do that safely.
+        formula_workbook = self.workbook_loader(self.excel_path, data_only=False, read_only=False)
         try:
             try:
                 worksheet = workbook[self.worksheet_name]
+                formula_worksheet = formula_workbook[self.worksheet_name]
             except KeyError as exc:
                 raise ValueError(
                     f"Worksheet '{self.worksheet_name}' was not found in {self.excel_path}.",
                 ) from exc
 
+            distribution_sheet = None
+            if "Distributions" in formula_workbook.sheetnames:
+                distribution_sheet = formula_workbook["Distributions"]
+            fx_rates_by_date: dict[date, float] = {}
+            if FX_RATES_SHEET_NAME in formula_workbook.sheetnames:
+                fx_rates_by_date = self._build_fx_rate_lookup(
+                    formula_workbook[FX_RATES_SHEET_NAME],
+                )
+
             header_row_index = self._locate_header_row(worksheet)
             entries: dict[date, WorksheetEntry] = {}
             skipped_rows: list[dict[str, str]] = []
             for row_index in range(header_row_index + 1, worksheet.max_row + 1):
-                pay_date_value = worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Pay Date"]).value
-                if pay_date_value in (None, ""):
+                pay_date_column = REQUIRED_HEADERS["Pay Date"]
+                pay_date_value = worksheet.cell(row=row_index, column=pay_date_column).value
+                formula_value = formula_worksheet.cell(row=row_index, column=pay_date_column).value
+                resolved_pay_date_value, _resolve_source = self._resolve_pay_date_cell_value(
+                    cached_value=pay_date_value,
+                    formula_value=formula_value,
+                    distribution_sheet=distribution_sheet,
+                )
+                if resolved_pay_date_value in (None, ""):
                     continue
 
                 try:
-                    pay_date = self._normalize_excel_date(pay_date_value)
+                    pay_date = self._normalize_excel_date(resolved_pay_date_value)
                 except ValueError as exc:
                     skipped_rows.append(
                         {
                             "row": str(row_index),
-                            "pay_date": self._describe_pay_date_value(pay_date_value),
+                            "pay_date": self._describe_pay_date_value(resolved_pay_date_value),
                             "reason": str(exc),
                         },
                     )
@@ -642,26 +676,22 @@ class SharesightSyncSkill(SkillBase):
                     raise ValueError(msg)
 
                 try:
+                    field_values = self._resolve_worksheet_amount_fields(
+                        worksheet=worksheet,
+                        formula_worksheet=formula_worksheet,
+                        distribution_sheet=distribution_sheet,
+                        fx_rates_by_date=fx_rates_by_date,
+                        row_index=row_index,
+                        pay_date=pay_date,
+                    )
                     entries[pay_date] = WorksheetEntry(
                         pay_date=pay_date,
-                        income_percent=self._normalize_decimal_string(
-                            worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Inc%"]).value,
-                        ),
-                        income_amount=self._normalize_decimal_string(
-                            worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Inc $"]).value,
-                        ),
-                        gross_amount=self._normalize_decimal_string(
-                            worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Gross Amt"]).value,
-                        ),
-                        foreign_tax_withheld=self._normalize_decimal_string(
-                            worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Tax"]).value,
-                        ),
-                        excess_tax=self._normalize_decimal_string(
-                            worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Excess Tax"]).value,
-                        ),
-                        exchange_rate=self._normalize_decimal_string(
-                            worksheet.cell(row=row_index, column=REQUIRED_HEADERS["FXRates"]).value,
-                        ),
+                        income_percent=field_values["income_percent"],
+                        income_amount=field_values["income_amount"],
+                        gross_amount=field_values["gross_amount"],
+                        foreign_tax_withheld=field_values["foreign_tax_withheld"],
+                        excess_tax=field_values["excess_tax"],
+                        exchange_rate=field_values["exchange_rate"],
                     )
                 except ValueError as exc:
                     skipped_rows.append(
@@ -673,8 +703,230 @@ class SharesightSyncSkill(SkillBase):
                     )
         finally:
             workbook.close()
+            formula_workbook.close()
 
         return entries, skipped_rows
+
+    def _resolve_pay_date_cell_value(
+        self,
+        *,
+        cached_value: Any,
+        formula_value: Any,
+        distribution_sheet: Worksheet | None,
+    ) -> tuple[Any, str]:
+        """Prefer live Distributions dates when Pay Date formula cache is missing/stale."""
+        if isinstance(cached_value, datetime):
+            return cached_value, "cached"
+        if isinstance(cached_value, date) and not isinstance(cached_value, datetime):
+            return cached_value, "cached"
+        if isinstance(cached_value, str) and cached_value.strip():
+            return cached_value, "cached"
+
+        # Missing cache (None) or stale empty-formula cache (time 00:00:00 / 0).
+        if distribution_sheet is not None and isinstance(formula_value, str):
+            match = DIST_PAY_DATE_REF_PATTERN.search(formula_value)
+            if match is not None:
+                source_value = distribution_sheet.cell(row=int(match.group(1)), column=6).value
+                if source_value not in (None, ""):
+                    return source_value, "formula_distributions"
+                return None, "formula_empty"
+
+        if isinstance(cached_value, time):
+            return None, "stale_time_cache"
+        return cached_value, "cached_fallback"
+
+    def _resolve_worksheet_amount_fields(
+        self,
+        *,
+        worksheet: Worksheet,
+        formula_worksheet: Worksheet,
+        distribution_sheet: Worksheet | None,
+        fx_rates_by_date: dict[date, float],
+        row_index: int,
+        pay_date: date,
+    ) -> dict[str, str]:
+        """Resolve amount/FX fields from cache, or recompute when formula cache is missing."""
+        cached = {
+            "income_percent": worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Inc%"]).value,
+            "income_amount": worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Inc $"]).value,
+            "gross_amount": worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Gross Amt"]).value,
+            "foreign_tax_withheld": worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Tax"]).value,
+            "excess_tax": worksheet.cell(row=row_index, column=REQUIRED_HEADERS["Excess Tax"]).value,
+            "exchange_rate": worksheet.cell(row=row_index, column=REQUIRED_HEADERS["FXRates"]).value,
+        }
+        if (
+            all(self._is_usable_cached_number(cached[key]) for key in cached)
+            and float(cached["exchange_rate"]) > 0
+        ):
+            return {
+                key: self._normalize_decimal_string(value)
+                for key, value in cached.items()
+            }
+
+        computed = self._compute_msty_row_amount_fields(
+            formula_worksheet=formula_worksheet,
+            distribution_sheet=distribution_sheet,
+            fx_rates_by_date=fx_rates_by_date,
+            row_index=row_index,
+            pay_date=pay_date,
+        )
+        resolved: dict[str, str] = {}
+        for key, cached_value in cached.items():
+            if key == "exchange_rate":
+                if self._is_usable_cached_number(cached_value) and float(cached_value) > 0:
+                    resolved[key] = self._normalize_decimal_string(cached_value)
+                elif key in computed:
+                    resolved[key] = self._normalize_decimal_string(computed[key])
+                else:
+                    resolved[key] = self._normalize_decimal_string(cached_value)
+                continue
+            if self._is_usable_cached_number(cached_value):
+                resolved[key] = self._normalize_decimal_string(cached_value)
+            elif key in computed:
+                resolved[key] = self._normalize_decimal_string(computed[key])
+            else:
+                resolved[key] = self._normalize_decimal_string(cached_value)
+
+        if not self._is_positive_decimal_string(resolved["exchange_rate"]):
+            raise ValueError(
+                "Exchange rate is missing or zero because the FXRates formula cache is "
+                "unavailable and the FXRates sheet lookup failed.",
+            )
+        return resolved
+
+    def _compute_msty_row_amount_fields(
+        self,
+        *,
+        formula_worksheet: Worksheet,
+        distribution_sheet: Worksheet | None,
+        fx_rates_by_date: dict[date, float],
+        row_index: int,
+        pay_date: date,
+    ) -> dict[str, float]:
+        """Recompute standard CS FY MSTY row fields when Excel formula caches are missing."""
+        roc_percent = formula_worksheet.cell(row=row_index, column=ROC_PERCENT_COLUMN).value
+        if not self._is_usable_cached_number(roc_percent):
+            return {}
+
+        dist_share = self._resolve_distribution_share(
+            formula_worksheet=formula_worksheet,
+            distribution_sheet=distribution_sheet,
+            row_index=row_index,
+        )
+        if dist_share is None:
+            return {}
+
+        tax_rate = self._resolve_tax_rate(formula_worksheet)
+        units = self._resolve_holdings_units(formula_worksheet)
+        exchange_rate = fx_rates_by_date.get(pay_date)
+        if tax_rate is None or units is None or exchange_rate is None:
+            computed: dict[str, float] = {}
+            if exchange_rate is not None:
+                computed["exchange_rate"] = exchange_rate
+            return computed
+
+        roc_percent_value = float(roc_percent)
+        income_percent = 100.0 - roc_percent_value
+        roc_amount = (roc_percent_value / 100.0) * units * dist_share
+        income_amount = (income_percent / 100.0) * units * dist_share
+        gross_amount = roc_amount + income_amount
+        foreign_tax_withheld = tax_rate * gross_amount
+        excess_tax = roc_amount * tax_rate
+        return {
+            "income_percent": income_percent,
+            "income_amount": income_amount,
+            "gross_amount": gross_amount,
+            "foreign_tax_withheld": foreign_tax_withheld,
+            "excess_tax": excess_tax,
+            "exchange_rate": exchange_rate,
+        }
+
+    def _resolve_distribution_share(
+        self,
+        *,
+        formula_worksheet: Worksheet,
+        distribution_sheet: Worksheet | None,
+        row_index: int,
+    ) -> float | None:
+        """Resolve Dist / Share from cache or Distributions!B reference."""
+        cached = formula_worksheet.cell(row=row_index, column=DIST_SHARE_COLUMN).value
+        if self._is_usable_cached_number(cached):
+            return float(cached)
+        if distribution_sheet is None or not isinstance(cached, str):
+            return None
+        match = DIST_SHARE_REF_PATTERN.search(cached)
+        if match is None:
+            return None
+        source_value = distribution_sheet.cell(row=int(match.group(1)), column=2).value
+        if not self._is_usable_cached_number(source_value):
+            return None
+        return float(source_value)
+
+    def _resolve_tax_rate(self, formula_worksheet: Worksheet) -> float | None:
+        """Resolve withholding rate from C4 (literal or simple fraction formula)."""
+        value = formula_worksheet[TAX_RATE_CELL].value
+        if self._is_usable_cached_number(value):
+            return float(value)
+        if isinstance(value, str):
+            match = SIMPLE_FRACTION_PATTERN.match(value.strip())
+            if match is not None:
+                numerator = float(match.group(1))
+                denominator = float(match.group(2))
+                if denominator == 0:
+                    return None
+                return numerator / denominator
+        return None
+
+    def _resolve_holdings_units(self, formula_worksheet: Worksheet) -> float | None:
+        """Resolve ROUND(SUM($D$8:$D$12/5)+SUM($D$13),0) from literal holdings cells."""
+        try:
+            split_adjusted = sum(
+                float(formula_worksheet.cell(row=row_index, column=HOLDINGS_COLUMN).value or 0) / 5.0
+                for row_index in range(HOLDINGS_START_ROW, HOLDINGS_END_ROW + 1)
+            )
+            extra = float(
+                formula_worksheet.cell(row=HOLDINGS_EXTRA_ROW, column=HOLDINGS_COLUMN).value or 0,
+            )
+        except (TypeError, ValueError):
+            return None
+        return float(round(split_adjusted + extra))
+
+    def _build_fx_rate_lookup(self, fx_rates_sheet: Worksheet) -> dict[date, float]:
+        """Build pay-date -> AUDUSD lookup from the FXRates sheet."""
+        rates: dict[date, float] = {}
+        for row_index in range(2, fx_rates_sheet.max_row + 1):
+            raw_date = fx_rates_sheet.cell(row=row_index, column=FX_RATE_DATE_COLUMN).value
+            if raw_date in (None, ""):
+                continue
+            try:
+                row_date = self._normalize_excel_date(raw_date)
+            except ValueError:
+                continue
+            rate = fx_rates_sheet.cell(row=row_index, column=FX_RATE_AUDUSD_COLUMN).value
+            if self._is_usable_cached_number(rate) and float(rate) > 0:
+                rates[row_date] = float(rate)
+        return rates
+
+    def _is_usable_cached_number(self, value: Any) -> bool:
+        """Return whether a cached Excel value is a usable finite number."""
+        if value in (None, ""):
+            return False
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return True
+        try:
+            Decimal(str(value).strip())
+        except (InvalidOperation, ValueError):
+            return False
+        return True
+
+    def _is_positive_decimal_string(self, value: str) -> bool:
+        """Return whether a normalized decimal string is strictly positive."""
+        try:
+            return Decimal(value) > 0
+        except InvalidOperation:
+            return False
 
     def _determine_payout_date_window(
         self,
