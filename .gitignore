@@ -50,3 +50,6 @@ htmlcov/
 credentials*.json
 secrets*.json
 openclaw/skills/flight_search/quota_state.json
+# bitcoin_balance_monitor runtime state (balances, never commit)
+openclaw/skills/bitcoin_balance_monitor/state.json
+openclaw/skills/bitcoin_balance_monitor/state.json.tmp
