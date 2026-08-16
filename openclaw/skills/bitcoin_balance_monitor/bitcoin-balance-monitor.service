@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenClaw Bitcoin watch-only balance monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openclaw
+WorkingDirectory=/home/aeternum/src/OpenClaw/openclaw/skills/bitcoin_balance_monitor
+Environment=PYTHONPATH=/home/aeternum/src/OpenClaw
+EnvironmentFile=/etc/openclaw/secrets.env
+ExecStart=/home/aeternum/src/OpenClaw/openclaw/skills/bitcoin_balance_monitor/run_bitcoin_balance_monitor.sh
+
+[Install]
+WantedBy=multi-user.target
